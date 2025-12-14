@@ -1,0 +1,76 @@
+.block-item {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.block-type {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+}
+
+.block-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.block-actions button {
+  background: white;
+  border: 1px solid #ddd;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s;
+}
+
+.block-actions button:hover {
+  background: #f5f5f5;
+}
+
+.block-actions button.delete-button:hover {
+  background: #fee;
+  border-color: #fcc;
+}
+
+.block-content {
+  padding: 16px;
+}
+
+.block-content pre {
+  margin: 0;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #333;
+}
+
+.loading {
+  color: #999;
+  font-style: italic;
+}
+
+.file-info .file-name {
+  font-size: 16px;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 8px;
+}
+
+.file-info .file-meta {
+  font-size: 12px;
+  color: #999;
+}
