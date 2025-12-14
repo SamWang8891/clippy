@@ -1,7 +1,0 @@
-# Clippy Backend Configuration Example
-# Copy this file to config.yaml and update with your settings
-
-backend:
-  # Backend URL that the frontend will use to connect
-  # In production, change this to your actual backend URL
-  url: "http://localhost:8123"

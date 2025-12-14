@@ -10,7 +10,6 @@ from typing import Dict, List, Optional
 
 import aiofiles
 import uvicorn
-import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -301,36 +300,6 @@ async def startup_event():
 
     # Start background cleanup task
     asyncio.create_task(cleanup_expired_sessions())
-
-
-@app.get(
-    "/config.yaml",
-    summary="Get Frontend Configuration",
-    description="Retrieve frontend configuration including backend URL (public endpoint)"
-)
-async def get_frontend_config():
-    """
-    Serve the frontend configuration file.
-
-    This endpoint is public (not behind /api/v1) so the frontend can fetch
-    it at runtime to discover the backend URL, even after being built.
-    """
-    config_path = Path(__file__).parent / "config.yaml"
-
-    if not config_path.exists():
-        # Return default config if file doesn't exist
-        default_config = {
-            "backend": {
-                "url": f"http://localhost:{PORT}"
-            }
-        }
-        yaml_content = yaml.dump(default_config)
-        return Response(content=yaml_content, media_type="application/x-yaml")
-
-    with open(config_path, "r") as f:
-        yaml_content = f.read()
-
-    return Response(content=yaml_content, media_type="application/x-yaml")
 
 
 @app.get(
