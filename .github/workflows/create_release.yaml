@@ -70,13 +70,13 @@ jobs:
         run: |
           mkdir clippy
           rm -rf backend/ frontend/ .github/ logo/ build.sh
-          shopt -s extglob
+          shopt -s extglob dotglob
           mv !(clippy) clippy/
 
       # Step 8: Package into ZIP
       - name: Create Release ZIP
         run: |
-          zip -r release.zip clippy/*
+          zip -r release.zip clippy/
 
       # Step 9: Create GitHub Release and Upload Asset
       - name: Create GitHub Release and Upload Asset
