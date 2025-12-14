@@ -1,0 +1,61 @@
+name: Build and Release Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag name for the release (e.g., v1.0.0)"
+        required: true
+      release_name:
+        description: "Name of the release"
+        required: true
+      release_notes:
+        description: "Release notes"
+        required: true
+
+jobs:
+  build_and_package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2: Install dependencies and build web-frontend
+      - name: Install and Build Web Frontend
+        working-directory: ./frontend
+        run: |
+          npm install
+          npm run build
+          mv dist ../docker/frontend
+
+      # Step 3: Prepare Backend Files
+      - name: Prepare Backend Files
+        run: |
+          rsync -av --exclude '*.iml' python-backend/ docker/backend/
+
+      # Step 4: Remove the unwanted source files and copy the rest into simple-url-folder
+      - name: Remove and copy files
+        run: |
+          mkdir clippy
+          rm -r backend/ frontend/ .github/ icon/ build.sh
+          shopt -s extglob
+          mv !(clippy) clippy/
+
+      # Step 5: Package Docker Folder into a ZIP
+      - name: Create Release ZIP
+        run: |
+          zip -r release.zip clippy/*
+
+      # Step 6: Create GitHub Release and Upload Asset using softprops/action-gh-release
+      - name: Create GitHub Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: ${{ github.event.inputs.release_name }}
+          body: ${{ github.event.inputs.release_notes }}
+          files: release.zip
