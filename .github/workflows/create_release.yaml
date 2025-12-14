@@ -31,33 +31,38 @@ jobs:
           npm install
           npm run build
 
-      # Step 3: Copy built frontend to docker/frontend
+      # Step 3: Prepare docker directories with clean templates
+      - name: Prepare Docker Templates
+        run: |
+          # Clean docker/backend (keep .gitkeep)
+          find docker/backend -mindepth 1 ! -name '.gitkeep' -delete
+          # Clean docker/frontend (keep .gitkeep)
+          find docker/frontend -mindepth 1 ! -name '.gitkeep' -delete
+
+          # Copy clean .env template for backend
+          cp backend/.env.example docker/backend/.env
+
+          # Copy clean config.yaml template for frontend
+          cp frontend/public/config.example.yaml docker/frontend/config.yaml
+
+      # Step 4: Copy built frontend to docker/frontend
       - name: Copy Frontend Build
         run: |
-          # Remove old build artifacts but keep .gitkeep and .env files
-          find docker/frontend -mindepth 1 ! -name '.gitkeep' ! -name '.env' ! -name 'config.yaml' -delete
           cp -r frontend/dist/* docker/frontend/
-          # Ensure config.yaml exists (copy from public if not)
-          if [ ! -f docker/frontend/config.yaml ]; then
-            cp frontend/public/config.yaml docker/frontend/
-          fi
 
-      # Step 4: Copy backend files to docker/backend
+      # Step 5: Copy backend files to docker/backend
       - name: Copy Backend Files
         run: |
-          # Remove old backend files but keep .gitkeep, .env, and uploads/
-          find docker/backend -mindepth 1 -maxdepth 1 ! -name '.gitkeep' ! -name '.env' ! -name 'uploads' -delete
           cp backend/app.py docker/backend/
           cp backend/requirements.txt docker/backend/
-          # Ensure uploads directory exists
           mkdir -p docker/backend/uploads
 
-      # Step 4.5: Clean up backup files
+      # Step 6: Clean up backup files
       - name: Clean up backup files
         run: |
           find . -name "*.bak" -delete
 
-      # Step 5: Remove source files and prepare release structure
+      # Step 7: Remove source files and prepare release structure
       - name: Prepare Release Structure
         run: |
           mkdir clippy
@@ -65,12 +70,12 @@ jobs:
           shopt -s extglob
           mv !(clippy) clippy/
 
-      # Step 6: Package into ZIP
+      # Step 8: Package into ZIP
       - name: Create Release ZIP
         run: |
           zip -r release.zip clippy/*
 
-      # Step 7: Create GitHub Release and Upload Asset
+      # Step 9: Create GitHub Release and Upload Asset
       - name: Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v2
         with:
