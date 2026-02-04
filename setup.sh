@@ -76,6 +76,16 @@ read -r -p "Please enter max file size (GiB): " maxfilesize
 sed -i.bak "s|MAX_UPLOAD_SIZE_GIB=.*|MAX_UPLOAD_SIZE_GIB=${maxfilesize}|g" docker/backend/.env
 
 
+# Get the connection id length from user
+echo -e "\nPlease enter the connection ID length."
+echo -e "Note: User will NOT be able to create new connection when all id is taken at the moment."
+echo -e "Recommented: 4-6\n"
+read -r -p "Please enter the connection ID length: " idlength
+
+# Update CONNECTION_ID_LENGTH in docker/backend/.env
+sed -i.bak "s|CONNECTION_ID_LENGTH=.*|MAX_UPLOAD_SIZE_GIB=${idlength}|g" docker/backend/.env
+
+
 # Generate secure encryption keys
 echo -e "\nGenerating secure encryption keys..."
 
