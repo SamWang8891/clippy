@@ -4,115 +4,184 @@
     align-items: center;
     min-height: 100vh;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: var(--spacing-md);
 }
 
 .session-entry-card {
-    background: white;
-    border-radius: 12px;
-    padding: 40px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-    max-width: 450px;
+    background: var(--surface);
+    border-radius: var(--radius-lg);
+    padding: 48px;
+    box-shadow: var(--shadow-xl);
+    max-width: 480px;
     width: 100%;
+    animation: fadeInUp 0.4s ease-out;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .session-entry h1 {
     margin: 0 0 8px;
-    font-size: 32px;
-    color: #333;
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--text-primary);
     text-align: center;
+    letter-spacing: -0.5px;
 }
 
 .subtitle {
-    margin: 0 0 32px;
-    color: #666;
+    margin: 0 0 40px;
+    color: var(--text-secondary);
     text-align: center;
-    font-size: 14px;
+    font-size: 15px;
+    font-weight: 400;
 }
 
 .mode-tabs {
     display: flex;
-    gap: 8px;
-    margin-bottom: 24px;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-lg);
+    background: var(--gray-100);
+    padding: 4px;
+    border-radius: var(--radius-md);
 }
 
 .mode-tabs button {
     flex: 1;
-    padding: 12px;
-    border: 1px solid #ddd;
-    background: white;
-    border-radius: 6px;
+    padding: 12px 16px;
+    border: none;
+    background: transparent;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 14px;
-    transition: all 0.2s;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    transition: all var(--transition-base);
 }
 
-.mode-tabs button:hover {
-    background: #f5f5f5;
+.mode-tabs button:hover:not(.active) {
+    background: rgba(255, 255, 255, 0.5);
+    color: var(--text-primary);
 }
 
 .mode-tabs button.active {
-    background: #667eea;
-    color: white;
-    border-color: #667eea;
+    background: var(--surface);
+    color: var(--primary-600);
+    box-shadow: var(--shadow-sm);
 }
 
 .session-form {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--spacing-md);
 }
 
 .form-group {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--spacing-sm);
 }
 
 .form-group label {
     font-size: 14px;
-    font-weight: 500;
-    color: #333;
+    font-weight: 600;
+    color: var(--text-primary);
+    letter-spacing: -0.2px;
 }
 
 .form-group input {
-    padding: 12px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    font-size: 14px;
-    transition: border-color 0.2s;
+    padding: 14px 16px;
+    border: 2px solid var(--border-light);
+    border-radius: var(--radius-md);
+    font-size: 15px;
+    font-family: var(--font-sans);
+    transition: all var(--transition-base);
+    background: var(--surface);
+}
+
+.form-group input:hover {
+    border-color: var(--border-medium);
 }
 
 .form-group input:focus {
     outline: none;
-    border-color: #667eea;
+    border-color: var(--primary-500);
+    box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+}
+
+.form-group input:disabled {
+    background: var(--gray-50);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.form-group input::placeholder {
+    color: var(--text-tertiary);
 }
 
 .session-form > button {
-    padding: 14px;
-    background: #667eea;
-    color: white;
+    padding: 16px;
+    background: linear-gradient(135deg, var(--primary-600), var(--primary-700));
+    color: var(--text-inverse);
     border: none;
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     font-size: 16px;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
-    transition: background 0.2s;
+    transition: all var(--transition-base);
+    box-shadow: var(--shadow-md);
+    margin-top: var(--spacing-sm);
 }
 
 .session-form > button:hover:not(:disabled) {
-    background: #5568d3;
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-lg);
+    background: linear-gradient(135deg, var(--primary-700), var(--primary-800));
+}
+
+.session-form > button:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: var(--shadow-sm);
 }
 
 .session-form > button:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+    transform: none;
+    box-shadow: var(--shadow-sm);
 }
 
 .error-message {
-    padding: 12px;
-    background: #fee;
-    color: #c33;
-    border-radius: 6px;
+    padding: 14px 16px;
+    background: #fee2e2;
+    color: #991b1b;
+    border-radius: var(--radius-md);
     font-size: 14px;
-    margin-top: 8px;
+    margin-top: var(--spacing-sm);
+    border-left: 3px solid var(--error);
+    animation: shake 0.3s ease-in-out;
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+}
+
+@media (max-width: 600px) {
+    .session-entry-card {
+        padding: 32px 24px;
+    }
+
+    .session-entry h1 {
+        font-size: 28px;
+    }
 }

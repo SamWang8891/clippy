@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import {useToast} from '../context/ToastContext';
 import {decrypt} from '../utils/encryption';
 import {getDownloadUrl} from '../utils/api';
 import './BlockItem.css';
@@ -6,6 +7,7 @@ import './BlockItem.css';
 export function BlockItem({block, sessionId, onDelete}) {
     const [decryptedContent, setDecryptedContent] = useState('');
     const [isDecrypting, setIsDecrypting] = useState(false);
+    const toast = useToast();
 
     useEffect(() => {
         if (block.type === 'text' && block.content) {
@@ -23,7 +25,7 @@ export function BlockItem({block, sessionId, onDelete}) {
 
     const handleCopy = () => {
         navigator.clipboard.writeText(decryptedContent);
-        alert('Copied to clipboard!');
+        toast.success('Copied to clipboard!');
     };
 
     const handleDownload = () => {

@@ -1,5 +1,6 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {useSession} from '../context/SessionContext';
+import {useToast} from '../context/ToastContext';
 import {useWebSocket} from '../hooks/useWebSocket';
 import {createTextBlock, deleteBlock, getSession, uploadFileBlock} from '../utils/api';
 import {BlockItem} from './BlockItem';
@@ -11,15 +12,16 @@ export function Id({sessionData}) {
     const [showQrPopup, setShowQrPopup] = useState(false);
     const qrButtonRef = useRef(null);
     const popupRef = useRef(null);
+    const toast = useToast();
 
     const handleCopyUrl = async () => {
         const url = window.location.href;
         try {
             await navigator.clipboard.writeText(url);
-            alert('URL copied to clipboard!');
+            toast.success('URL copied to clipboard!');
         } catch (err) {
             console.error('Failed to copy URL:', err);
-            alert('Failed to copy URL');
+            toast.error('Failed to copy URL');
         }
     };
 
@@ -118,6 +120,7 @@ export function Id({sessionData}) {
 
 export function ClipboardInterface() {
     const {sessionData, clearSession} = useSession();
+    const toast = useToast();
     const [session, setSession] = useState(null);
     const [blocks, setBlocks] = useState([]);
     const [users, setUsers] = useState([]);
@@ -229,8 +232,9 @@ export function ClipboardInterface() {
         try {
             await createTextBlock(sessionData.connection_id, sessionData.user_id, content);
             setIsCreating(false);
+            toast.success('Text block created successfully');
         } catch (err) {
-            alert('Failed to create block: ' + err.message);
+            toast.error('Failed to create block: ' + err.message);
         }
     };
 
@@ -238,16 +242,18 @@ export function ClipboardInterface() {
         try {
             await uploadFileBlock(sessionData.connection_id, sessionData.user_id, file);
             setIsCreating(false);
+            toast.success('File uploaded successfully');
         } catch (err) {
-            alert('Failed to upload file: ' + err.message);
+            toast.error('Failed to upload file: ' + err.message);
         }
     };
 
     const handleDeleteBlock = async (blockId) => {
         try {
             await deleteBlock(sessionData.connection_id, sessionData.user_id, blockId);
+            toast.success('Block deleted');
         } catch (err) {
-            alert('Failed to delete block: ' + err.message);
+            toast.error('Failed to delete block: ' + err.message);
         }
     };
 
