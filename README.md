@@ -1,6 +1,6 @@
 # Simple URL Shortener
 
-<img src="https://img.shields.io/badge/Version-v1.1-green">
+<img src="https://img.shields.io/badge/Version-v1.2-green">
 
 A web-based application that allows users to share text and files in real-time through secure, encrypted sessions.
 
@@ -30,10 +30,10 @@ A web-based application that allows users to share text and files in real-time t
 
 Tired of sharing text / files across different computers? Try this clippy!
 
-- **Session-based sharing**: Create or join sessions using simple 6-character IDs
+- **Session-based sharing**: Create or join sessions using short, custom-length IDs
 - **End-to-end encryption**: All text and files are encrypted client-side before transmission
 - **Real-time collaboration**: See blocks appear instantly when other users create them
-- **File uploads**: Support for file uploads up to 1 GiB (configurable)
+- **File uploads**: Support for small file uploads
 - **User management**:
     - Custom or random user names
     - Host can transfer host rights to other users
