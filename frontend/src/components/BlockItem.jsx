@@ -28,8 +28,38 @@ export function BlockItem({block, sessionId, onDelete}) {
         toast.success('Copied to clipboard!');
     };
 
-    const handleDownload = () => {
-        window.open(getDownloadUrl(sessionId, block.id), '_blank');
+    const handleDownload = async () => {
+        try {
+            // Fetch the encrypted file
+            const response = await fetch(getDownloadUrl(sessionId, block.id));
+            const encryptedData = await response.text();
+
+            // Decrypt the base64 data
+            const decryptedBase64 = decrypt(encryptedData);
+
+            // Convert base64 back to binary
+            const binaryString = atob(decryptedBase64);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+
+            // Create blob and trigger download
+            const blob = new Blob([bytes]);
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = block.original_filename || block.filename || 'download';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            toast.success('File downloaded successfully');
+        } catch (err) {
+            console.error('Download error:', err);
+            toast.error('Failed to download file');
+        }
     };
 
     return (
@@ -94,7 +124,7 @@ export function BlockItem({block, sessionId, onDelete}) {
                     )
                 ) : (
                     <div className="file-info">
-                        <div className="file-name">{block.filename}</div>
+                        <div className="file-name">{block.original_filename || block.filename}</div>
                         <div className="file-meta">
                             Created: {new Date(block.created_at).toLocaleString()}
                         </div>

@@ -68,7 +68,8 @@ class Block(BaseModel):
     id: str
     type: str  # "text" or "file"
     content: Optional[str] = None
-    filename: Optional[str] = None
+    filename: Optional[str] = None  # Server filename
+    original_filename: Optional[str] = None  # Original uploaded filename
     created_by: str
     created_at: str
 
@@ -632,7 +633,7 @@ async def upload_file_block(
 
     block_id = str(uuid.uuid4())
 
-    # Save file
+    # Save file with generated name but preserve original
     file_extension = Path(file.filename).suffix
     safe_filename = f"file_{block_id}{file_extension}"
     file_path = session.session_dir / safe_filename
@@ -641,11 +642,12 @@ async def upload_file_block(
         content = await file.read()
         await f.write(content)
 
-    # Create block
+    # Create block with both server filename and original filename
     block = Block(
         id=block_id,
         type="file",
         filename=safe_filename,
+        original_filename=file.filename,  # Store original name
         created_by=user_id,
         created_at=datetime.now().isoformat()
     )
@@ -725,7 +727,9 @@ async def download_block(connection_id: str, block_id: str):
         file_path = session.session_dir / block.filename
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
-        return FileResponse(file_path, filename=block.filename)
+        # Use original filename for download if available, otherwise use server filename
+        download_filename = block.original_filename if block.original_filename else block.filename
+        return FileResponse(file_path, filename=download_filename)
     elif block.type == "text":
         text_file = session.session_dir / f"text_block_{block_id}.txt"
         if not text_file.exists():
