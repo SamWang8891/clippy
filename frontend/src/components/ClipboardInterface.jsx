@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSession } from '../context/SessionContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { getSession, createTextBlock, uploadFileBlock, deleteBlock } from '../utils/api';
@@ -7,6 +7,112 @@ import { BlockItem } from './BlockItem';
 import { Menu } from './Menu';
 import { Notification } from './Notification';
 import './ClipboardInterface.css';
+
+export function Id({ sessionData }) {
+  const [showQrPopup, setShowQrPopup] = useState(false);
+  const qrButtonRef = useRef(null);
+  const popupRef = useRef(null);
+
+  const handleCopyUrl = async () => {
+    const url = window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      alert('URL copied to clipboard!');
+    } catch (err) {
+      console.error('Failed to copy URL:', err);
+      alert('Failed to copy URL');
+    }
+  };
+
+  const handleToggleQr = () => {
+    setShowQrPopup(!showQrPopup);
+  };
+
+  // Close popup when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (showQrPopup &&
+          popupRef.current &&
+          !popupRef.current.contains(event.target) &&
+          qrButtonRef.current &&
+          !qrButtonRef.current.contains(event.target)) {
+        setShowQrPopup(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showQrPopup]);
+
+  const currentUrl = window.location.href;
+  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(currentUrl)}`;
+
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+      Connection ID: <strong>{sessionData?.connection_id}</strong>
+      <button onClick={handleCopyUrl} title="Copy URL to clipboard" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}>
+        <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor">
+          <path d="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-560h80v560h440v80H200Zm160-240v-480 480Z"/>
+        </svg>
+      </button>
+      <button ref={qrButtonRef} onClick={handleToggleQr} title="Show QR code" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}>
+        <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor">
+          <path d="M120-520v-320h320v320H120Zm80-80h160v-160H200v160Zm-80 480v-320h320v320H120Zm80-80h160v-160H200v160Zm320-320v-320h320v320H520Zm80-80h160v-160H600v160Zm160 480v-80h80v80h-80ZM520-360v-80h80v80h-80Zm80 80v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm80 80v-80h80v80h-80Zm80-80v-80h80v80h-80Zm0-160v-80h80v80h-80Zm80 80v-80h80v80h-80Z"/>
+        </svg>
+      </button>
+
+      {showQrPopup && (
+        <div ref={popupRef} style={{
+          position: 'absolute',
+          top: '100%',
+          right: '0',
+          marginTop: '8px',
+          background: 'white',
+          border: '1px solid #ddd',
+          borderRadius: '8px',
+          padding: '16px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          zIndex: 1000
+        }}>
+          <div style={{
+            position: 'absolute',
+            top: '-8px',
+            right: '20px',
+            width: '0',
+            height: '0',
+            borderLeft: '8px solid transparent',
+            borderRight: '8px solid transparent',
+            borderBottom: '8px solid #ddd'
+          }}></div>
+          <div style={{
+            position: 'absolute',
+            top: '-7px',
+            right: '21px',
+            width: '0',
+            height: '0',
+            borderLeft: '7px solid transparent',
+            borderRight: '7px solid transparent',
+            borderBottom: '7px solid white'
+          }}></div>
+          <div style={{ textAlign: 'center' }}>
+            <p style={{ margin: '0 0 12px 0', fontSize: '14px', fontWeight: '500' }}>Scan to join session</p>
+            <img src={qrCodeUrl} alt="QR Code" style={{ display: 'block', margin: '0 auto' }} />
+            <p style={{ margin: '12px 0 0 0', fontSize: '12px', color: '#666', wordBreak: 'break-all' }}>{currentUrl}</p>
+            <button onClick={() => setShowQrPopup(false)} style={{
+              marginTop: '12px',
+              padding: '6px 16px',
+              background: '#f0f0f0',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}>Close</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 export function ClipboardInterface() {
   const { sessionData, clearSession } = useSession();
@@ -169,7 +275,8 @@ export function ClipboardInterface() {
           <h1 onClick={handleLogoClick} style={{ cursor: 'pointer' }}>Clippy</h1>
           <div className="session-info">
             <div className="session-id">
-              Connection ID: <strong>{sessionData?.connection_id}</strong>
+              {/*Connection ID: <strong>{sessionData?.connection_id}</strong>*/}
+              <Id sessionData={sessionData}/>
             </div>
             {currentUser && (
               <div className="user-name">
