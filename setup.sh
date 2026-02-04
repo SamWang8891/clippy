@@ -83,7 +83,7 @@ echo -e "Recommented: 4-6\n"
 read -r -p "Please enter the connection ID length: " idlength
 
 # Update CONNECTION_ID_LENGTH in docker/backend/.env
-sed -i.bak "s|CONNECTION_ID_LENGTH=.*|MAX_UPLOAD_SIZE_GIB=${idlength}|g" docker/backend/.env
+sed -i.bak "s|CONNECTION_ID_LENGTH=.*|CONNECTION_ID_LENGTH=${idlength}|g" docker/backend/.env
 
 
 # Generate secure encryption keys
