@@ -137,3 +137,55 @@
 .danger-button:hover {
     background: #dc2626;
 }
+
+@media (max-width: 480px) {
+    .menu-panel {
+        width: 100%;
+        max-width: 100vw;
+    }
+
+    .menu-header {
+        padding: var(--spacing-md);
+    }
+
+    .menu-header h2 {
+        font-size: 18px;
+    }
+
+    .menu-section {
+        padding: var(--spacing-md);
+    }
+
+    .menu-section h3 {
+        font-size: 14px;
+    }
+
+    .user-item {
+        padding: 10px;
+        flex-wrap: wrap;
+        gap: var(--spacing-sm);
+    }
+
+    .user-name {
+        font-size: 13px;
+    }
+
+    .transfer-button {
+        padding: 5px 10px;
+        font-size: 11px;
+    }
+}
+
+@media (max-width: 375px) {
+    .menu-panel {
+        width: 100%;
+    }
+
+    .menu-header {
+        padding: var(--spacing-sm) var(--spacing-md);
+    }
+
+    .user-item {
+        padding: 8px;
+    }
+}

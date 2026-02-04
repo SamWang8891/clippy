@@ -68,13 +68,13 @@ export function SessionEntry() {
                         className={mode === 'create' ? 'active' : ''}
                         onClick={() => setMode('create')}
                     >
-                        Create Session
+                        Create Connection
                     </button>
                     <button
                         className={mode === 'join' ? 'active' : ''}
                         onClick={() => setMode('join')}
                     >
-                        Join Session
+                        Join Connection
                     </button>
                 </div>
 
@@ -91,18 +91,18 @@ export function SessionEntry() {
                             />
                         </div>
                         <button type="submit" disabled={loading}>
-                            {loading ? 'Creating...' : 'Create Session'}
+                            {loading ? 'Creating...' : 'Create Connection'}
                         </button>
                     </form>
                 ) : (
                     <form onSubmit={handleJoin} className="session-form">
                         <div className="form-group">
-                            <label>Session ID</label>
+                            <label>Connection ID</label>
                             <input
                                 type="text"
                                 value={sessionId}
                                 onChange={(e) => setSessionId(e.target.value.toLowerCase())}
-                                placeholder="Enter 6-character session ID"
+                                placeholder="Enter 6-character connection ID"
                                 maxLength={6}
                                 required
                                 disabled={loading}
@@ -119,7 +119,7 @@ export function SessionEntry() {
                             />
                         </div>
                         <button type="submit" disabled={loading || sessionId.length !== 6}>
-                            {loading ? 'Joining...' : 'Join Session'}
+                            {loading ? 'Joining...' : 'Join Connection'}
                         </button>
                     </form>
                 )}

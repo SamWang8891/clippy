@@ -7,15 +7,15 @@ export function Menu({session, users, currentUser, onClose}) {
     const {sessionData, clearSession} = useSession();
     const isHost = currentUser?.is_host;
 
-    const handleDestroySession = async () => {
-        if (!confirm('Are you sure you want to destroy this session?')) return;
+    const handleDestroyConnection = async () => {
+        if (!confirm('Are you sure you want to destroy this connection?')) return;
 
         try {
             await destroySession(sessionData.connection_id, sessionData.user_id);
             clearSession();
             window.location.reload();
         } catch (err) {
-            alert('Failed to destroy session: ' + err.message);
+            alert('Failed to destroy connection: ' + err.message);
         }
     };
 
@@ -42,7 +42,7 @@ export function Menu({session, users, currentUser, onClose}) {
             <div className="menu-overlay" onClick={onClose}/>
             <div className="menu-panel">
                 <div className="menu-header">
-                    <h2>Session Menu</h2>
+                    <h2>Connection Menu</h2>
                     <button className="close-button" onClick={onClose}>
                         ✕
                     </button>
@@ -87,8 +87,8 @@ export function Menu({session, users, currentUser, onClose}) {
                         </div>
 
                         <div className="menu-section">
-                            <button className="danger-button" onClick={handleDestroySession}>
-                                Destroy Session
+                            <button className="danger-button" onClick={handleDestroyConnection}>
+                                Destroy Connection
                             </button>
                         </div>
                     </>

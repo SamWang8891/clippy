@@ -98,7 +98,7 @@ export function Id({sessionData}) {
                 borderBottom: '7px solid white'
             }}></div>
             <div style={{textAlign: 'center'}}>
-                <p style={{margin: '0 0 12px 0', fontSize: '14px', fontWeight: '500'}}>Scan to join session</p>
+                <p style={{margin: '0 0 12px 0', fontSize: '14px', fontWeight: '500'}}>Scan to join connection</p>
                 <img src={qrCodeUrl} alt="QR Code" style={{display: 'block', margin: '0 auto'}}/>
                 <p style={{
                     margin: '12px 0 0 0', fontSize: '12px', color: '#666', wordBreak: 'break-all'
@@ -161,7 +161,7 @@ export function ClipboardInterface() {
                     await getSession(sessionData.connection_id);
                 } catch (err) {
                     // Session doesn't exist or is invalid
-                    const shouldGoHome = confirm('Your session has expired or is no longer available. Would you like to return to the home page?');
+                    const shouldGoHome = confirm('Your connection has expired or is no longer available. Would you like to return to the home page?');
 
                     if (shouldGoHome) {
                         clearSession();
@@ -181,14 +181,14 @@ export function ClipboardInterface() {
         switch (message.type) {
             case 'user_joined':
                 setUsers((prev) => [...prev, message.user]);
-                showNotification(`${message.user.name} joined the session`);
+                showNotification(`${message.user.name} joined the connection`);
                 break;
 
             case 'user_left':
                 setUsers((prev) => prev.filter((u) => u.id !== message.user_id));
                 const leftUser = users.find((u) => u.id === message.user_id);
                 if (leftUser) {
-                    showNotification(`${leftUser.name} left the session`);
+                    showNotification(`${leftUser.name} left the connection`);
                 }
                 break;
 
@@ -213,7 +213,7 @@ export function ClipboardInterface() {
                 break;
 
             case 'session_destroyed':
-                showNotification('Session has been destroyed');
+                showNotification('Connection has been destroyed');
                 setTimeout(() => {
                     window.location.reload();
                 }, 2000);
@@ -258,7 +258,7 @@ export function ClipboardInterface() {
     };
 
     const handleLogoClick = () => {
-        if (confirm('Leave this session and return to home?')) {
+        if (confirm('Leave this connection and return to home?')) {
             clearSession();
             // Clear URL back to home
             window.history.pushState({}, '', '/');
