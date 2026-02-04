@@ -65,7 +65,7 @@ export function Id({sessionData}) {
             </svg>
         </button>
 
-        {showQrPopup && (<div ref={popupRef} style={{
+        {showQrPopup && (<div ref={popupRef} className="qr-popup" style={{
             position: 'absolute',
             top: '100%',
             right: '0',
@@ -293,7 +293,7 @@ export function ClipboardInterface() {
                 <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
                     {isConnected ? '● Connected' : '○ Disconnected'}
                 </div>
-                <button className="menu-button" onClick={() => setShowMenu(!showMenu)}>
+                <button className={`menu-button ${showMenu ? 'active' : ''}`} onClick={() => setShowMenu(!showMenu)}>
                     ☰
                 </button>
             </div>
