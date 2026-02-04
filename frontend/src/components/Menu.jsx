@@ -11,7 +11,7 @@ export function Menu({ session, users, currentUser, onClose }) {
     if (!confirm('Are you sure you want to destroy this session?')) return;
 
     try {
-      await destroySession(sessionData.session_id, sessionData.user_id);
+      await destroySession(sessionData.connection_id, sessionData.user_id);
       clearSession();
       window.location.reload();
     } catch (err) {
@@ -23,7 +23,7 @@ export function Menu({ session, users, currentUser, onClose }) {
     if (!confirm('Transfer host rights to this user?')) return;
 
     try {
-      await transferHost(sessionData.session_id, sessionData.user_id, newHostId);
+      await transferHost(sessionData.connection_id, sessionData.user_id, newHostId);
     } catch (err) {
       alert('Failed to transfer host: ' + err.message);
     }
@@ -31,7 +31,7 @@ export function Menu({ session, users, currentUser, onClose }) {
 
   const handleToggleJoin = async () => {
     try {
-      await toggleJoin(sessionData.session_id, sessionData.user_id, !session.allow_join);
+      await toggleJoin(sessionData.connection_id, sessionData.user_id, !session.allow_join);
     } catch (err) {
       alert('Failed to toggle join permission: ' + err.message);
     }

@@ -21,7 +21,7 @@ function getApiBase() {
  * Create a new collaborative session.
  *
  * @param {string} [userName] - Optional user name (random name generated if not provided)
- * @returns {Promise<Object>} Session data including session_id, user_id, user_name, is_host
+ * @returns {Promise<Object>} Session data including connection_id, user_id, user_name, is_host
  */
 export async function createSession(userName) {
   const response = await fetch(`${getApiBase()}/session/create`, {
@@ -38,14 +38,14 @@ export async function createSession(userName) {
  *
  * @param {string} sessionId - The 6-character session ID to join
  * @param {string} [userName] - Optional user name (random name generated if not provided)
- * @returns {Promise<Object>} Session data including session_id, user_id, user_name, is_host
+ * @returns {Promise<Object>} Session data including connection_id, user_id, user_name, is_host
  * @throws {Error} If session not found or not accepting new members
  */
 export async function joinSession(sessionId, userName) {
   const response = await fetch(`${getApiBase()}/session/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ session_id: sessionId, user_name: userName }),
+    body: JSON.stringify({ connection_id: sessionId, user_name: userName }),
   });
 
   if (!response.ok) {
@@ -76,7 +76,7 @@ export async function getSession(sessionId) {
 }
 
 export async function destroySession(sessionId, userId) {
-  const response = await fetch(`${getApiBase()}/session/destroy?session_id=${sessionId}&user_id=${userId}`, {
+  const response = await fetch(`${getApiBase()}/session/destroy?connection_id=${sessionId}&user_id=${userId}`, {
     method: 'POST',
   });
   return response.json();
@@ -87,7 +87,7 @@ export async function transferHost(sessionId, currentHostId, newHostId) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      session_id: sessionId,
+      connection_id: sessionId,
       current_host_id: currentHostId,
       new_host_id: newHostId,
     }),
@@ -100,7 +100,7 @@ export async function toggleJoin(sessionId, userId, allowJoin) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      session_id: sessionId,
+      connection_id: sessionId,
       user_id: userId,
       allow_join: allowJoin,
     }),
@@ -123,7 +123,7 @@ export async function createTextBlock(sessionId, userId, content) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      session_id: sessionId,
+      connection_id: sessionId,
       user_id: userId,
       type: 'text',
       content: encryptedContent,
@@ -152,7 +152,7 @@ export async function uploadFileBlock(sessionId, userId, file) {
 
   // Create a blob with encrypted data and send it
   const formData = new FormData();
-  formData.append('session_id', sessionId);
+  formData.append('connection_id', sessionId);
   formData.append('user_id', userId);
 
   // Create a blob with the encrypted data
@@ -177,7 +177,7 @@ export async function deleteBlock(sessionId, userId, blockId) {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      session_id: sessionId,
+      connection_id: sessionId,
       user_id: userId,
       block_id: blockId,
     }),

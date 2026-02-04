@@ -20,14 +20,14 @@ export function ClipboardInterface() {
 
   // Fetch session data
   useEffect(() => {
-    if (sessionData?.session_id) {
+    if (sessionData?.connection_id) {
       loadSession();
     }
   }, [sessionData]);
 
   const loadSession = async () => {
     try {
-      const data = await getSession(sessionData.session_id);
+      const data = await getSession(sessionData.connection_id);
       setSession(data);
       setUsers(data.users);
       setBlocks(data.blocks);
@@ -84,7 +84,7 @@ export function ClipboardInterface() {
   }, [users, sessionData]);
 
   const { isConnected } = useWebSocket(
-    sessionData?.session_id,
+    sessionData?.connection_id,
     sessionData?.user_id,
     handleWebSocketMessage
   );
@@ -96,7 +96,7 @@ export function ClipboardInterface() {
 
   const handleCreateTextBlock = async (content) => {
     try {
-      await createTextBlock(sessionData.session_id, sessionData.user_id, content);
+      await createTextBlock(sessionData.connection_id, sessionData.user_id, content);
       setIsCreating(false);
     } catch (err) {
       alert('Failed to create block: ' + err.message);
@@ -105,7 +105,7 @@ export function ClipboardInterface() {
 
   const handleUploadFile = async (file) => {
     try {
-      await uploadFileBlock(sessionData.session_id, sessionData.user_id, file);
+      await uploadFileBlock(sessionData.connection_id, sessionData.user_id, file);
       setIsCreating(false);
     } catch (err) {
       alert('Failed to upload file: ' + err.message);
@@ -114,7 +114,7 @@ export function ClipboardInterface() {
 
   const handleDeleteBlock = async (blockId) => {
     try {
-      await deleteBlock(sessionData.session_id, sessionData.user_id, blockId);
+      await deleteBlock(sessionData.connection_id, sessionData.user_id, blockId);
     } catch (err) {
       alert('Failed to delete block: ' + err.message);
     }
@@ -136,7 +136,7 @@ export function ClipboardInterface() {
           <h1 onClick={handleLogoClick} style={{ cursor: 'pointer' }}>Clippy</h1>
           <div className="session-info">
             <div className="session-id">
-              Session: <strong>{sessionData?.session_id}</strong>
+              Connection ID: <strong>{sessionData?.connection_id}</strong>
             </div>
             {currentUser && (
               <div className="user-name">
@@ -171,7 +171,7 @@ export function ClipboardInterface() {
             <BlockItem
               key={block.id}
               block={block}
-              sessionId={sessionData.session_id}
+              sessionId={sessionData.connection_id}
               onDelete={handleDeleteBlock}
             />
           ))}
