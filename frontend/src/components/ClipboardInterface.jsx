@@ -18,10 +18,15 @@ export function ClipboardInterface() {
   const [isCreating, setIsCreating] = useState(false);
   const [newBlockType, setNewBlockType] = useState('text');
 
-  // Fetch session data
+  // Fetch session data and ensure URL is correct
   useEffect(() => {
     if (sessionData?.connection_id) {
       loadSession();
+      // Ensure URL matches the session ID
+      const currentPath = window.location.pathname.replace('/', '');
+      if (currentPath !== sessionData.connection_id) {
+        window.history.replaceState({}, '', `/${sessionData.connection_id}`);
+      }
     }
   }, [sessionData]);
 
@@ -51,6 +56,8 @@ export function ClipboardInterface() {
 
           if (shouldGoHome) {
             clearSession();
+            // Clear URL back to home
+            window.history.pushState({}, '', '/');
             window.location.reload();
           }
         }
@@ -147,6 +154,8 @@ export function ClipboardInterface() {
   const handleLogoClick = () => {
     if (confirm('Leave this session and return to home?')) {
       clearSession();
+      // Clear URL back to home
+      window.history.pushState({}, '', '/');
       window.location.reload();
     }
   };

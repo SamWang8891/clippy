@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { createSession, joinSession } from '../utils/api';
 import { useSession } from '../context/SessionContext';
 import './SessionEntry.css';
@@ -11,6 +11,18 @@ export function SessionEntry() {
   const [loading, setLoading] = useState(false);
   const { setSessionData } = useSession();
 
+  // Check URL for session ID on mount
+  useEffect(() => {
+    const pathname = window.location.pathname;
+    const urlSessionId = pathname.replace('/', '').trim().toLowerCase();
+
+    // If URL contains a 6-character session ID, auto-populate join form
+    if (urlSessionId && urlSessionId.length === 6 && /^[a-z0-9]{6}$/.test(urlSessionId)) {
+      setMode('join');
+      setSessionId(urlSessionId);
+    }
+  }, []);
+
   const handleCreate = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -18,6 +30,8 @@ export function SessionEntry() {
 
     try {
       const data = await createSession(userName || null);
+      // Update URL with session ID
+      window.history.pushState({}, '', `/${data.session_id}`);
       setSessionData(data);
     } catch (err) {
       setError(err.message);
@@ -33,6 +47,8 @@ export function SessionEntry() {
 
     try {
       const data = await joinSession(sessionId, userName || null);
+      // Update URL with session ID
+      window.history.pushState({}, '', `/${data.session_id}`);
       setSessionData(data);
     } catch (err) {
       setError(err.message);
