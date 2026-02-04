@@ -41,7 +41,7 @@ jobs:
 
           # Copy clean .env template for backend
           cp backend/.env.example docker/backend/.env
-      
+          
           # Copy clean .env template for docker compose
           cp .env.example .env
 

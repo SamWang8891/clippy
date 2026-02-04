@@ -13,7 +13,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # Load environment variables
@@ -28,7 +28,7 @@ ENCRYPTION_PASSPHRASE = os.getenv("ENCRYPTION_PASSPHRASE", "default-passphrase-p
 ENCRYPTION_SALT = os.getenv("ENCRYPTION_SALT", "default-salt-please-change")
 MAX_FILE_SIZE_GIB = float(os.getenv("MAX_UPLOAD_SIZE_GIB", "1"))
 SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "3600"))
-SESSION_ID_LENGTH = int(os.getenv("SESSION_ID_LENGTH", "6"))
+CONNECTION_ID_LENGTH = int(os.getenv("CONNECTION_ID_LENGTH", "6"))
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -68,13 +68,14 @@ class Block(BaseModel):
     id: str
     type: str  # "text" or "file"
     content: Optional[str] = None
-    filename: Optional[str] = None
+    filename: Optional[str] = None  # Server filename
+    original_filename: Optional[str] = None  # Original uploaded filename
     created_by: str
     created_at: str
 
 
 class SessionInfo(BaseModel):
-    session_id: str
+    connection_id: str
     users: List[User]
     blocks: List[Block]
     allow_join: bool
@@ -86,31 +87,31 @@ class CreateSessionRequest(BaseModel):
 
 
 class JoinSessionRequest(BaseModel):
-    session_id: str
+    connection_id: str
     user_name: Optional[str] = None
 
 
 class CreateBlockRequest(BaseModel):
-    session_id: str
+    connection_id: str
     user_id: str
     type: str
     content: Optional[str] = None
 
 
 class DeleteBlockRequest(BaseModel):
-    session_id: str
+    connection_id: str
     user_id: str
     block_id: str
 
 
 class TransferHostRequest(BaseModel):
-    session_id: str
+    connection_id: str
     current_host_id: str
     new_host_id: str
 
 
 class ToggleJoinRequest(BaseModel):
-    session_id: str
+    connection_id: str
     user_id: str
     allow_join: bool
 
@@ -121,7 +122,7 @@ class Session:
     Represents a collaborative session with users, blocks, and WebSocket connections.
 
     Attributes:
-        session_id: Unique 6-character session identifier
+        connection_id: Unique 6-character session identifier
         users: Dictionary of user_id -> User objects
         blocks: Dictionary of block_id -> Block objects (text and files)
         allow_join: Whether new users can join this session
@@ -130,9 +131,9 @@ class Session:
         session_dir: Directory path for storing session files
     """
 
-    def __init__(self, session_id: str, host_id: str, host_name: str):
+    def __init__(self, connection_id: str, host_id: str, host_name: str):
         """Initialize a new session with a host user."""
-        self.session_id = session_id
+        self.connection_id = connection_id
         self.users: Dict[str, User] = {
             host_id: User(id=host_id, name=host_name, is_host=True)
         }
@@ -140,7 +141,7 @@ class Session:
         self.allow_join = True
         self.last_activity = datetime.now()
         self.websockets: Dict[str, WebSocket] = {}
-        self.session_dir = UPLOAD_DIR / session_id
+        self.session_dir = UPLOAD_DIR / connection_id
         self.session_dir.mkdir(exist_ok=True)
 
     def update_activity(self):
@@ -226,11 +227,11 @@ class Session:
                 pass
 
 
-# Global session storage - Maps session_id to Session objects
+# Global session storage - Maps connection_id to Session objects
 sessions: Dict[str, Session] = {}
 
 
-def generate_session_id() -> str:
+def generate_connection_id() -> str:
     """
     Generate a unique 6-character session ID using lowercase letters and digits.
 
@@ -238,9 +239,9 @@ def generate_session_id() -> str:
     """
     chars = string.ascii_lowercase + string.digits
     while True:
-        session_id = ''.join(random.choices(chars, k=SESSION_ID_LENGTH))
-        if session_id not in sessions:
-            return session_id
+        connection_id = ''.join(random.choices(chars, k=CONNECTION_ID_LENGTH))
+        if connection_id not in sessions:
+            return connection_id
 
 
 def generate_random_name() -> str:
@@ -337,13 +338,13 @@ async def create_session(request: CreateSessionRequest):
     """
     user_id = str(uuid.uuid4())
     user_name = request.user_name or generate_random_name()
-    session_id = generate_session_id()
+    connection_id = generate_connection_id()
 
-    session = Session(session_id, user_id, user_name)
-    sessions[session_id] = session
+    session = Session(connection_id, user_id, user_name)
+    sessions[connection_id] = session
 
     return {
-        "session_id": session_id,
+        "connection_id": connection_id,
         "user_id": user_id,
         "user_name": user_name,
         "is_host": True
@@ -365,12 +366,12 @@ async def join_session(request: JoinSessionRequest):
 
     Returns session ID, user ID, unique user name, and host status.
     """
-    session_id = request.session_id.lower()
+    connection_id = request.connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     if not session.allow_join:
         raise HTTPException(status_code=403, detail="Session is not accepting new members")
@@ -387,7 +388,7 @@ async def join_session(request: JoinSessionRequest):
     })
 
     return {
-        "session_id": session_id,
+        "connection_id": connection_id,
         "user_id": user_id,
         "user_name": user.name,
         "is_host": False
@@ -395,26 +396,26 @@ async def join_session(request: JoinSessionRequest):
 
 
 @app.get(
-    "/api/v1/session/{session_id}",
+    "/api/v1/session/{connection_id}",
     summary="Get Session Details",
     description="Retrieve complete session information including users and blocks"
 )
-async def get_session(session_id: str):
+async def get_session(connection_id: str):
     """
     Get detailed information about a session.
 
     Returns all users in the session, all blocks (text and files),
     join permission status, and the current host ID.
     """
-    session_id = session_id.lower()
+    connection_id = connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     return SessionInfo(
-        session_id=session_id,
+        connection_id=connection_id,
         users=list(session.users.values()),
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
@@ -427,7 +428,7 @@ async def get_session(session_id: str):
     summary="Destroy Session",
     description="Permanently delete a session and all its data (host only)"
 )
-async def destroy_session(session_id: str, user_id: str):
+async def destroy_session(connection_id: str, user_id: str):
     """
     Destroy a session and clean up all associated data.
 
@@ -437,12 +438,12 @@ async def destroy_session(session_id: str, user_id: str):
     - Delete all uploaded files and text blocks
     - Remove the session from memory
     """
-    session_id = session_id.lower()
+    connection_id = connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     # Verify user is host
     if user_id not in session.users or not session.users[user_id].is_host:
@@ -466,7 +467,7 @@ async def destroy_session(session_id: str, user_id: str):
         import shutil
         shutil.rmtree(session.session_dir)
 
-    del sessions[session_id]
+    del sessions[connection_id]
 
     return {"success": True}
 
@@ -484,12 +485,12 @@ async def transfer_host(request: TransferHostRequest):
     gain all host privileges including the ability to destroy the session,
     transfer host rights, and control join permissions.
     """
-    session_id = request.session_id.lower()
+    connection_id = request.connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     # Verify current user is host
     if request.current_host_id not in session.users or not session.users[request.current_host_id].is_host:
@@ -521,12 +522,12 @@ async def toggle_join(request: ToggleJoinRequest):
     Only the host can change this setting. When disabled, new join
     requests will be rejected. Existing users remain connected.
     """
-    session_id = request.session_id.lower()
+    connection_id = request.connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     # Verify user is host
     if request.user_id not in session.users or not session.users[request.user_id].is_host:
@@ -557,12 +558,12 @@ async def create_text_block(request: CreateBlockRequest):
     all connected users in real-time. Content should be encrypted
     client-side before sending.
     """
-    session_id = request.session_id.lower()
+    connection_id = request.connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     if request.user_id not in session.users:
         raise HTTPException(status_code=403, detail="User not in session")
@@ -601,7 +602,7 @@ async def create_text_block(request: CreateBlockRequest):
     description="Upload a file to the session (encrypted)"
 )
 async def upload_file_block(
-        session_id: str = Form(...),
+        connection_id: str = Form(...),
         user_id: str = Form(...),
         file: UploadFile = File(...)
 ):
@@ -612,12 +613,12 @@ async def upload_file_block(
     saved to the session directory and broadcasted to all users.
     Maximum file size is configurable (default 1 GiB).
     """
-    session_id = session_id.lower()
+    connection_id = connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     if user_id not in session.users:
         raise HTTPException(status_code=403, detail="User not in session")
@@ -632,7 +633,7 @@ async def upload_file_block(
 
     block_id = str(uuid.uuid4())
 
-    # Save file
+    # Save file with generated name but preserve original
     file_extension = Path(file.filename).suffix
     safe_filename = f"file_{block_id}{file_extension}"
     file_path = session.session_dir / safe_filename
@@ -641,11 +642,12 @@ async def upload_file_block(
         content = await file.read()
         await f.write(content)
 
-    # Create block
+    # Create block with both server filename and original filename
     block = Block(
         id=block_id,
         type="file",
         filename=safe_filename,
+        original_filename=file.filename,  # Store original name
         created_by=user_id,
         created_at=datetime.now().isoformat()
     )
@@ -673,12 +675,12 @@ async def delete_block(request: DeleteBlockRequest):
     Removes the block from memory and deletes associated files from
     the uploads directory. All users are notified via WebSocket.
     """
-    session_id = request.session_id.lower()
+    connection_id = request.connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     if request.user_id not in session.users:
         raise HTTPException(status_code=403, detail="User not in session")
@@ -698,23 +700,23 @@ async def delete_block(request: DeleteBlockRequest):
 
 
 @app.get(
-    "/api/v1/block/download/{session_id}/{block_id}",
+    "/api/v1/block/download/{connection_id}/{block_id}",
     summary="Download Block",
     description="Download a text or file block (encrypted)"
 )
-async def download_block(session_id: str, block_id: str):
+async def download_block(connection_id: str, block_id: str):
     """
     Download a block's content.
 
     Returns the encrypted file or text content. Client is responsible
     for decryption using the shared encryption keys.
     """
-    session_id = session_id.lower()
+    connection_id = connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     if block_id not in session.blocks:
         raise HTTPException(status_code=404, detail="Block not found")
@@ -725,7 +727,9 @@ async def download_block(session_id: str, block_id: str):
         file_path = session.session_dir / block.filename
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
-        return FileResponse(file_path, filename=block.filename)
+        # Use original filename for download if available, otherwise use server filename
+        download_filename = block.original_filename if block.original_filename else block.filename
+        return FileResponse(file_path, filename=download_filename)
     elif block.type == "text":
         text_file = session.session_dir / f"text_block_{block_id}.txt"
         if not text_file.exists():
@@ -735,15 +739,15 @@ async def download_block(session_id: str, block_id: str):
     raise HTTPException(status_code=400, detail="Invalid block type")
 
 
-@app.websocket("/ws/{session_id}/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str, user_id: str):
-    session_id = session_id.lower()
+@app.websocket("/ws/{connection_id}/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: str):
+    connection_id = connection_id.lower()
 
-    if session_id not in sessions:
+    if connection_id not in sessions:
         await websocket.close(code=1008, reason="Session not found")
         return
 
-    session = sessions[session_id]
+    session = sessions[connection_id]
 
     if user_id not in session.users:
         await websocket.close(code=1008, reason="User not in session")

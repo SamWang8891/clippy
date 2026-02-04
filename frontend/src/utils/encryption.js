@@ -6,11 +6,10 @@
  */
 
 import CryptoJS from 'crypto-js';
+import {getBackendUrl} from './config';
 
 // Encryption configuration fetched from server on initialization
 let encryptionConfig = null;
-
-import { getBackendUrl } from './config';
 
 /**
  * Initialize encryption by fetching the passphrase and salt from the server.
@@ -19,14 +18,14 @@ import { getBackendUrl } from './config';
  * @returns {Promise<Object>} Configuration object with passphrase, salt, and file size limit
  */
 export async function initEncryption() {
-  const backendUrl = getBackendUrl();
-  const response = await fetch(`${backendUrl}/api/v1/config`);
-  const config = await response.json();
-  encryptionConfig = {
-    passphrase: config.encryption_passphrase,
-    salt: config.encryption_salt,
-  };
-  return config;
+    const backendUrl = getBackendUrl();
+    const response = await fetch(`${backendUrl}/api/v1/config`);
+    const config = await response.json();
+    encryptionConfig = {
+        passphrase: config.encryption_passphrase,
+        salt: config.encryption_salt,
+    };
+    return config;
 }
 
 /**
@@ -37,18 +36,18 @@ export async function initEncryption() {
  * @throws {Error} If encryption hasn't been initialized
  */
 export function encrypt(data) {
-  if (!encryptionConfig) {
-    throw new Error('Encryption not initialized');
-  }
+    if (!encryptionConfig) {
+        throw new Error('Encryption not initialized');
+    }
 
-  const key = CryptoJS.PBKDF2(
-    encryptionConfig.passphrase,
-    encryptionConfig.salt,
-    { keySize: 256 / 32, iterations: 1000 }
-  );
+    const key = CryptoJS.PBKDF2(
+        encryptionConfig.passphrase,
+        encryptionConfig.salt,
+        {keySize: 256 / 32, iterations: 1000}
+    );
 
-  const encrypted = CryptoJS.AES.encrypt(data, key.toString());
-  return encrypted.toString();
+    const encrypted = CryptoJS.AES.encrypt(data, key.toString());
+    return encrypted.toString();
 }
 
 /**
@@ -59,16 +58,16 @@ export function encrypt(data) {
  * @throws {Error} If encryption hasn't been initialized
  */
 export function decrypt(encryptedData) {
-  if (!encryptionConfig) {
-    throw new Error('Encryption not initialized');
-  }
+    if (!encryptionConfig) {
+        throw new Error('Encryption not initialized');
+    }
 
-  const key = CryptoJS.PBKDF2(
-    encryptionConfig.passphrase,
-    encryptionConfig.salt,
-    { keySize: 256 / 32, iterations: 1000 }
-  );
+    const key = CryptoJS.PBKDF2(
+        encryptionConfig.passphrase,
+        encryptionConfig.salt,
+        {keySize: 256 / 32, iterations: 1000}
+    );
 
-  const decrypted = CryptoJS.AES.decrypt(encryptedData, key.toString());
-  return decrypted.toString(CryptoJS.enc.Utf8);
+    const decrypted = CryptoJS.AES.decrypt(encryptedData, key.toString());
+    return decrypted.toString(CryptoJS.enc.Utf8);
 }

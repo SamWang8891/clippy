@@ -26,7 +26,7 @@ A web-based application that allows users to share text and files in real-time t
 
 ## Features ✨
 
-Tired of sharing text / files across different computers? Try this clippy! 
+Tired of sharing text / files across different computers? Try this clippy!
 
 - **Session-based sharing**: Create or join sessions using simple 6-character IDs
 - **End-to-end encryption**: All text and files are encrypted client-side before transmission
@@ -38,6 +38,7 @@ Tired of sharing text / files across different computers? Try this clippy!
     - Host can control whether new users can join
 - **Session persistence**: Sessions remain active until destroyed by host or after 1 hour of inactivity
 - **Block system**: Add and delete text or file blocks, similar to Jupyter notebooks
+
 ---
 
 ## Screenshots 📸
@@ -128,11 +129,11 @@ If you want to modify the backend, follow these steps. Otherwise, copy the conte
 
 1. Navigate to the `backend` folder.
 2. (Optional) Create a virtual environment:
-    By using venv
+   By using venv
     ```bash
     python -m venv .venv
     ```
-    OR by using uv
+   OR by using uv
     ```bash
     uv venv
     ```
