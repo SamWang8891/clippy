@@ -1,5 +1,7 @@
 # Simple URL Shortener
 
+<img src="https://img.shields.io/badge/Version-v1.1-green">
+
 A web-based application that allows users to share text and files in real-time through secure, encrypted sessions.
 
 [台灣繁體中文 請按這](README.zh-TW.md)
@@ -96,8 +98,10 @@ By default, the web service runs on port 8080. To change it, edit the `.env` fil
 
 ### Prerequisites ✅
 
-1. Node.js >= 22.20.0
-2. Python >= 3.9.6
+Recommended:
+
+1. Node >= 22.20.0
+2. Python >= 3.12
 
 ### Building 🚧
 

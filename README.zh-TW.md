@@ -1,6 +1,8 @@
 # Simple URL Shortener
 
-一個讓使用者能透過安全、加密的連線階段 (Session)，即時分享文字與檔案的網頁應用程式。
+<img src="https://img.shields.io/badge/Version-v1.1-green">
+
+一個讓使用者能透過安全、加密的的方式，即時分享文字與檔案的網頁應用程式。
 
 [Link for English version](README.md)
 
@@ -93,8 +95,10 @@
 
 ### 事前準備 ✅
 
-1. Node.js >= 22.20.0
-2. Python >= 3.9.6
+建議：
+
+1. Node >= 22.20.0
+2. Python >= 3.12
 
 ### 建構 🚧
 
