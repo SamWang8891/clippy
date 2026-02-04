@@ -55,8 +55,14 @@ export function Menu({session, users, currentUser, onClose}) {
                             <div key={user.id} className="user-item">
                                 <div className="user-info">
                   <span className="user-name">
-                    {user.name}
-                      {user.is_host && ' 👑'}
+                      {user.is_host && (
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="16" height="16"
+                               style={{marginLeft: '6px', verticalAlign: 'middle'}}>
+                              <path d="M256 80 L340 200 L426 100 L400 320 L112 320 L86 100 L172 200 Z" fill="#F9B233"/>
+                              <rect x="96" y="340" width="320" height="60" rx="10" ry="10" fill="#F9B233"/>
+                          </svg>
+                      )}
+                      {user.name}
                       {user.id === sessionData.user_id && ' (You)'}
                   </span>
                                 </div>
