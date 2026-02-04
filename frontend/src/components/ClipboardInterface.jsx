@@ -273,12 +273,10 @@ export function ClipboardInterface() {
             <div className="header-left">
                 <h1 onClick={handleLogoClick} style={{cursor: 'pointer'}}>Clippy</h1>
                 <div className="session-info">
-                    <br/>
                     {currentUser && (<div className="user-name">
                         {currentUser.name}
                         {currentUser.is_host && <span className="host-icon" title="Host">👑</span>}
                     </div>)}
-                    <br/>
                     <div className="session-id">
                         <Id sessionData={sessionData}/>
                     </div>
