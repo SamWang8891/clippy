@@ -36,6 +36,30 @@ export function ClipboardInterface() {
     }
   };
 
+  // Validate session on page refresh/mount
+  useEffect(() => {
+    const validateSession = async () => {
+      if (sessionData?.connection_id) {
+        try {
+          // Try to fetch the session to see if it still exists
+          await getSession(sessionData.connection_id);
+        } catch (err) {
+          // Session doesn't exist or is invalid
+          const shouldGoHome = confirm(
+            'Your session has expired or is no longer available. Would you like to return to the home page?'
+          );
+
+          if (shouldGoHome) {
+            clearSession();
+            window.location.reload();
+          }
+        }
+      }
+    };
+
+    validateSession();
+  }, []); // Empty dependency array = runs once on mount
+
   // WebSocket message handler
   const handleWebSocketMessage = useCallback((message) => {
     switch (message.type) {
