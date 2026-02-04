@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
+import {useConfirm} from '../context/ConfirmContext';
 import {useWebSocket} from '../hooks/useWebSocket';
 import {createTextBlock, deleteBlock, getSession, uploadFileBlock} from '../utils/api';
 import {BlockItem} from './BlockItem';
@@ -121,6 +122,7 @@ export function Id({sessionData}) {
 export function ClipboardInterface() {
     const {sessionData, clearSession} = useSession();
     const toast = useToast();
+    const confirm = useConfirm();
     const [session, setSession] = useState(null);
     const [blocks, setBlocks] = useState([]);
     const [users, setUsers] = useState([]);
@@ -161,7 +163,13 @@ export function ClipboardInterface() {
                     await getSession(sessionData.connection_id);
                 } catch (err) {
                     // Session doesn't exist or is invalid
-                    const shouldGoHome = confirm('Your connection has expired or is no longer available. Would you like to return to the home page?');
+                    const shouldGoHome = await confirm({
+                        title: 'Connection Expired',
+                        message: 'Your connection has expired or is no longer available. Would you like to return to the home page?',
+                        confirmText: 'Go Home',
+                        cancelText: 'Stay',
+                        confirmStyle: 'primary'
+                    });
 
                     if (shouldGoHome) {
                         clearSession();
@@ -257,8 +265,16 @@ export function ClipboardInterface() {
         }
     };
 
-    const handleLogoClick = () => {
-        if (confirm('Leave this connection and return to home?')) {
+    const handleLogoClick = async () => {
+        const confirmed = await confirm({
+            title: 'Leave Connection',
+            message: 'Are you sure you want to leave this connection? You will need the connection ID to rejoin.',
+            confirmText: 'Leave',
+            cancelText: 'Stay',
+            confirmStyle: 'danger'
+        });
+
+        if (confirmed) {
             clearSession();
             // Clear URL back to home
             window.history.pushState({}, '', '/');

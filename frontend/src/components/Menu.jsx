@@ -1,39 +1,62 @@
 import React from 'react';
 import {useSession} from '../context/SessionContext';
+import {useConfirm} from '../context/ConfirmContext';
+import {useToast} from '../context/ToastContext';
 import {destroySession, toggleJoin, transferHost} from '../utils/api';
 import './Menu.css';
 
 export function Menu({session, users, currentUser, onClose}) {
     const {sessionData, clearSession} = useSession();
+    const confirm = useConfirm();
+    const toast = useToast();
     const isHost = currentUser?.is_host;
 
     const handleDestroyConnection = async () => {
-        if (!confirm('Are you sure you want to destroy this connection?')) return;
+        const confirmed = await confirm({
+            title: 'Destroy Connection',
+            message: 'Are you sure you want to destroy this connection? All users will be disconnected and all data will be lost.',
+            confirmText: 'Destroy',
+            cancelText: 'Cancel',
+            confirmStyle: 'danger'
+        });
+
+        if (!confirmed) return;
 
         try {
             await destroySession(sessionData.connection_id, sessionData.user_id);
             clearSession();
             window.location.reload();
         } catch (err) {
-            alert('Failed to destroy connection: ' + err.message);
+            toast.error('Failed to destroy connection: ' + err.message);
         }
     };
 
     const handleTransferHost = async (newHostId) => {
-        if (!confirm('Transfer host rights to this user?')) return;
+        const user = users.find(u => u.id === newHostId);
+        const confirmed = await confirm({
+            title: 'Transfer Host Rights',
+            message: `Transfer host rights to ${user?.name}? They will have full control over the connection.`,
+            confirmText: 'Transfer',
+            cancelText: 'Cancel',
+            confirmStyle: 'primary'
+        });
+
+        if (!confirmed) return;
 
         try {
             await transferHost(sessionData.connection_id, sessionData.user_id, newHostId);
+            toast.success('Host rights transferred successfully');
         } catch (err) {
-            alert('Failed to transfer host: ' + err.message);
+            toast.error('Failed to transfer host: ' + err.message);
         }
     };
 
     const handleToggleJoin = async () => {
         try {
             await toggleJoin(sessionData.connection_id, sessionData.user_id, !session.allow_join);
+            toast.success(session.allow_join ? 'New users can no longer join' : 'New users can now join');
         } catch (err) {
-            alert('Failed to toggle join permission: ' + err.message);
+            toast.error('Failed to toggle join permission: ' + err.message);
         }
     };
 

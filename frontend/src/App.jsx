@@ -1,6 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {SessionProvider, useSession} from './context/SessionContext';
 import {ToastProvider} from './context/ToastContext';
+import {ConfirmProvider} from './context/ConfirmContext';
 import {SessionEntry} from './components/SessionEntry';
 import {ClipboardInterface} from './components/ClipboardInterface';
 import {initConfig} from './utils/config';
@@ -43,7 +44,9 @@ function App() {
     return (
         <SessionProvider>
             <ToastProvider>
-                <AppContent/>
+                <ConfirmProvider>
+                    <AppContent/>
+                </ConfirmProvider>
             </ToastProvider>
         </SessionProvider>
     );
