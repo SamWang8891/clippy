@@ -18,10 +18,37 @@ function getApiBase() {
 }
 
 /**
+ * Handle API response with standardized format.
+ * @param {Response} response - Fetch response object
+ * @returns {Promise<Object>} Response data
+ * @throws {Error} If response indicates an error
+ */
+async function handleApiResponse(response) {
+    const json = await response.json();
+
+    // Handle standardized response format
+    if (json.status !== undefined) {
+        if (json.status >= 200 && json.status < 300) {
+            return json.data || json;
+        } else {
+            throw new Error(json.message || 'Request failed');
+        }
+    }
+
+    // Fallback for legacy responses
+    if (!response.ok) {
+        throw new Error(json.detail || json.message || 'Request failed');
+    }
+
+    return json;
+}
+
+/**
  * Create a new collaborative session.
  *
  * @param {string} [userName] - Optional user name (random name generated if not provided)
  * @returns {Promise<Object>} Session data including connection_id, user_id, user_name, is_host
+ * @throws {Error} If session creation fails (e.g., all connection IDs exhausted)
  */
 export async function createSession(userName) {
     const response = await fetch(`${getApiBase()}/session/create`, {
@@ -29,8 +56,7 @@ export async function createSession(userName) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({user_name: userName}),
     });
-    const data = await response.json();
-    return data;
+    return handleApiResponse(response);
 }
 
 /**
@@ -47,14 +73,7 @@ export async function joinSession(sessionId, userName) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({connection_id: sessionId, user_name: userName}),
     });
-
-    if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to join session');
-    }
-
-    const data = await response.json();
-    return data;
+    return handleApiResponse(response);
 }
 
 /**
@@ -66,20 +85,14 @@ export async function joinSession(sessionId, userName) {
  */
 export async function getSession(sessionId) {
     const response = await fetch(`${getApiBase()}/session/${sessionId}`);
-
-    if (!response.ok) {
-        throw new Error('Session not found');
-    }
-
-    const data = await response.json();
-    return data;
+    return handleApiResponse(response);
 }
 
 export async function destroySession(sessionId, userId) {
     const response = await fetch(`${getApiBase()}/session/destroy?connection_id=${sessionId}&user_id=${userId}`, {
         method: 'POST',
     });
-    return response.json();
+    return handleApiResponse(response);
 }
 
 export async function transferHost(sessionId, currentHostId, newHostId) {
@@ -92,7 +105,7 @@ export async function transferHost(sessionId, currentHostId, newHostId) {
             new_host_id: newHostId,
         }),
     });
-    return response.json();
+    return handleApiResponse(response);
 }
 
 export async function toggleJoin(sessionId, userId, allowJoin) {
@@ -105,7 +118,7 @@ export async function toggleJoin(sessionId, userId, allowJoin) {
             allow_join: allowJoin,
         }),
     });
-    return response.json();
+    return handleApiResponse(response);
 }
 
 /**
@@ -129,7 +142,7 @@ export async function createTextBlock(sessionId, userId, content) {
             content: encryptedContent,
         }),
     });
-    return response.json();
+    return handleApiResponse(response);
 }
 
 /**
@@ -163,13 +176,7 @@ export async function uploadFileBlock(sessionId, userId, file) {
         method: 'POST',
         body: formData,
     });
-
-    if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to upload file');
-    }
-
-    return response.json();
+    return handleApiResponse(response);
 }
 
 export async function deleteBlock(sessionId, userId, blockId) {
@@ -182,7 +189,7 @@ export async function deleteBlock(sessionId, userId, blockId) {
             block_id: blockId,
         }),
     });
-    return response.json();
+    return handleApiResponse(response);
 }
 
 export function getDownloadUrl(sessionId, blockId) {

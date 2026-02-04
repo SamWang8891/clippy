@@ -20,7 +20,11 @@ let encryptionConfig = null;
 export async function initEncryption() {
     const backendUrl = getBackendUrl();
     const response = await fetch(`${backendUrl}/api/v1/config`);
-    const config = await response.json();
+    const json = await response.json();
+
+    // Handle standardized response format
+    const config = json.data || json;
+
     encryptionConfig = {
         passphrase: config.encryption_passphrase,
         salt: config.encryption_salt,

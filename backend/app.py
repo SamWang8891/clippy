@@ -5,15 +5,16 @@ import random
 import string
 import uuid
 from datetime import datetime, timedelta
+from http import HTTPStatus
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import aiofiles
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 # Load environment variables
@@ -34,7 +35,7 @@ CONNECTION_ID_LENGTH = int(os.getenv("CONNECTION_ID_LENGTH", "6"))
 app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
-    version="1.1",
+    version="1.2",
     openapi_url="/api/v1/openapi.json",
     docs_url="/api/v1/docs",
 )
@@ -231,17 +232,54 @@ class Session:
 sessions: Dict[str, Session] = {}
 
 
-def generate_connection_id() -> str:
+def api_response(status: HTTPStatus, message: str, data: Optional[dict] = None) -> JSONResponse:
+    """
+    Create a standardized API response with HTTP status code.
+
+    Args:
+        status: HTTP status code
+        message: Human-readable message
+        data: Optional dictionary of response data
+
+    Returns:
+        JSONResponse with consistent structure
+    """
+    content = {
+        "status": status.value,
+        "message": message,
+    }
+    if data is not None:
+        content["data"] = data
+    return JSONResponse(status_code=status.value, content=content)
+
+
+def generate_connection_id() -> str | None:
     """
     Generate a unique 6-character session ID using lowercase letters and digits.
 
-    Returns a session ID that doesn't exist in the current sessions dictionary.
+    Returns a session ID that doesn't exist in the current sessions dictionary,
+    or None if all possible IDs are exhausted.
     """
     chars = string.ascii_lowercase + string.digits
-    while True:
+    max_possible = len(chars) ** CONNECTION_ID_LENGTH
+    max_attempts = min(max_possible, 1000)  # Limit attempts to avoid infinite loops
+
+    for _ in range(max_attempts):
         connection_id = ''.join(random.choices(chars, k=CONNECTION_ID_LENGTH))
         if connection_id not in sessions:
             return connection_id
+
+    # If random generation failed, check if we're actually at capacity
+    if len(sessions) >= max_possible:
+        return None
+
+    # Fallback: try a few more times
+    for _ in range(100):
+        connection_id = ''.join(random.choices(chars, k=CONNECTION_ID_LENGTH))
+        if connection_id not in sessions:
+            return connection_id
+
+    return None
 
 
 def generate_random_name() -> str:
@@ -250,8 +288,18 @@ def generate_random_name() -> str:
 
     Examples: "HappyPanda", "CleverFox", "SwiftEagle"
     """
-    adjectives = ["Happy", "Clever", "Swift", "Bright", "Cool", "Smart", "Quick", "Calm", "Bold", "Wise"]
-    nouns = ["Panda", "Tiger", "Eagle", "Dolphin", "Fox", "Wolf", "Bear", "Hawk", "Lion", "Owl"]
+    adjectives = [
+        "Happy", "Clever", "Swift", "Bright", "Cool", "Smart", "Quick", "Calm", "Bold", "Wise",
+        "Brave", "Gentle", "Lively", "Witty", "Agile", "Keen", "Noble", "Proud", "Merry", "Jolly",
+        "Fierce", "Loyal", "Mighty", "Lucky", "Sunny", "Silent", "Golden", "Silver", "Crystal", "Cosmic",
+        "Mystic", "Shadow", "Radiant", "Wild", "Chill", "Vivid", "Daring", "Curious", "Sneaky", "Fluffy"
+    ]
+    nouns = [
+        "Panda", "Tiger", "Eagle", "Dolphin", "Fox", "Wolf", "Bear", "Hawk", "Lion", "Owl",
+        "Falcon", "Otter", "Raven", "Phoenix", "Dragon", "Panther", "Koala", "Penguin", "Rabbit", "Deer",
+        "Lynx", "Jaguar", "Cheetah", "Whale", "Shark", "Cobra", "Turtle", "Crane", "Swan", "Parrot",
+        "Husky", "Corgi", "Gecko", "Lemur", "Badger", "Beaver", "Moose", "Elk", "Bison", "Raccoon"
+    ]
     return f"{random.choice(adjectives)}{random.choice(nouns)}"
 
 
@@ -315,11 +363,15 @@ async def get_config():
     Returns encryption passphrase, salt, and maximum file size in bytes.
     These values are used by the client for end-to-end encryption.
     """
-    return {
-        "encryption_passphrase": ENCRYPTION_PASSPHRASE,
-        "encryption_salt": ENCRYPTION_SALT,
-        "max_file_size_bytes": MAX_FILE_SIZE,
-    }
+    return api_response(
+        HTTPStatus.OK,
+        "Configuration retrieved",
+        {
+            "encryption_passphrase": ENCRYPTION_PASSPHRASE,
+            "encryption_salt": ENCRYPTION_SALT,
+            "max_file_size_bytes": MAX_FILE_SIZE,
+        }
+    )
 
 
 @app.post(
@@ -336,19 +388,30 @@ async def create_session(request: CreateSessionRequest):
 
     Returns session ID, user ID, user name, and host status.
     """
+    connection_id = generate_connection_id()
+
+    if connection_id is None:
+        return api_response(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "Unable to create session: all connection IDs are currently in use. Please try again later."
+        )
+
     user_id = str(uuid.uuid4())
     user_name = request.user_name or generate_random_name()
-    connection_id = generate_connection_id()
 
     session = Session(connection_id, user_id, user_name)
     sessions[connection_id] = session
 
-    return {
-        "connection_id": connection_id,
-        "user_id": user_id,
-        "user_name": user_name,
-        "is_host": True
-    }
+    return api_response(
+        HTTPStatus.OK,
+        "Session created",
+        {
+            "connection_id": connection_id,
+            "user_id": user_id,
+            "user_name": user_name,
+            "is_host": True
+        }
+    )
 
 
 @app.post(
@@ -369,12 +432,18 @@ async def join_session(request: JoinSessionRequest):
     connection_id = request.connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     if not session.allow_join:
-        raise HTTPException(status_code=403, detail="Session is not accepting new members")
+        return api_response(
+            HTTPStatus.FORBIDDEN,
+            "Session is not accepting new members"
+        )
 
     user_id = str(uuid.uuid4())
     user_name = request.user_name or generate_random_name()
@@ -387,12 +456,16 @@ async def join_session(request: JoinSessionRequest):
         "user": user.model_dump()
     })
 
-    return {
-        "connection_id": connection_id,
-        "user_id": user_id,
-        "user_name": user.name,
-        "is_host": False
-    }
+    return api_response(
+        HTTPStatus.OK,
+        "Connection created",
+        {
+            "connection_id": connection_id,
+            "user_id": user_id,
+            "user_name": user.name,
+            "is_host": False
+        }
+    )
 
 
 @app.get(
@@ -410,16 +483,25 @@ async def get_session(connection_id: str):
     connection_id = connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
-    return SessionInfo(
+    session_info = SessionInfo(
         connection_id=connection_id,
         users=list(session.users.values()),
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
         host_id=next((u.id for u in session.users.values() if u.is_host), "")
+    )
+
+    return api_response(
+        HTTPStatus.OK,
+        "Session retrieved",
+        session_info.model_dump()
     )
 
 
@@ -441,13 +523,19 @@ async def destroy_session(connection_id: str, user_id: str):
     connection_id = connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     # Verify user is host
     if user_id not in session.users or not session.users[user_id].is_host:
-        raise HTTPException(status_code=403, detail="Only host can destroy session")
+        return api_response(
+            HTTPStatus.FORBIDDEN,
+            "Only host can destroy session"
+        )
 
     # Notify all users
     await session.broadcast({
@@ -469,7 +557,11 @@ async def destroy_session(connection_id: str, user_id: str):
 
     del sessions[connection_id]
 
-    return {"success": True}
+    return api_response(
+        HTTPStatus.OK,
+        "Session destroyed",
+        {"success": True}
+    )
 
 
 @app.post(
@@ -488,16 +580,25 @@ async def transfer_host(request: TransferHostRequest):
     connection_id = request.connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     # Verify current user is host
     if request.current_host_id not in session.users or not session.users[request.current_host_id].is_host:
-        raise HTTPException(status_code=403, detail="Only host can transfer host rights")
+        return api_response(
+            HTTPStatus.FORBIDDEN,
+            "Only host can transfer host rights"
+        )
 
     if request.new_host_id not in session.users:
-        raise HTTPException(status_code=404, detail="New host user not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "New host user not found"
+        )
 
     session.transfer_host(request.new_host_id)
 
@@ -507,7 +608,11 @@ async def transfer_host(request: TransferHostRequest):
         "new_host_id": request.new_host_id
     })
 
-    return {"success": True}
+    return api_response(
+        HTTPStatus.OK,
+        "Host transferred",
+        {"success": True}
+    )
 
 
 @app.post(
@@ -525,13 +630,19 @@ async def toggle_join(request: ToggleJoinRequest):
     connection_id = request.connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     # Verify user is host
     if request.user_id not in session.users or not session.users[request.user_id].is_host:
-        raise HTTPException(status_code=403, detail="Only host can toggle join permission")
+        return api_response(
+            HTTPStatus.FORBIDDEN,
+            "Only host can toggle join permission"
+        )
 
     session.allow_join = request.allow_join
     session.update_activity()
@@ -542,7 +653,11 @@ async def toggle_join(request: ToggleJoinRequest):
         "allow_join": request.allow_join
     })
 
-    return {"success": True}
+    return api_response(
+        HTTPStatus.OK,
+        "Join permission updated",
+        {"success": True}
+    )
 
 
 @app.post(
@@ -561,12 +676,18 @@ async def create_text_block(request: CreateBlockRequest):
     connection_id = request.connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     if request.user_id not in session.users:
-        raise HTTPException(status_code=403, detail="User not in session")
+        return api_response(
+            HTTPStatus.FORBIDDEN,
+            "User not in session"
+        )
 
     block_id = str(uuid.uuid4())
 
@@ -593,7 +714,11 @@ async def create_text_block(request: CreateBlockRequest):
         "block": block.model_dump()
     })
 
-    return {"block_id": block_id, "block": block}
+    return api_response(
+        HTTPStatus.OK,
+        "Block created",
+        {"block_id": block_id, "block": block.model_dump()}
+    )
 
 
 @app.post(
@@ -616,12 +741,18 @@ async def upload_file_block(
     connection_id = connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     if user_id not in session.users:
-        raise HTTPException(status_code=403, detail="User not in session")
+        return api_response(
+            HTTPStatus.FORBIDDEN,
+            "User not in session"
+        )
 
     # Check file size
     file.file.seek(0, 2)
@@ -629,7 +760,10 @@ async def upload_file_block(
     file.file.seek(0)
 
     if file_size > MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail=f"File too large. Max size: {MAX_FILE_SIZE} bytes")
+        return api_response(
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            f"File too large. Max size: {MAX_FILE_SIZE} bytes"
+        )
 
     block_id = str(uuid.uuid4())
 
@@ -660,7 +794,11 @@ async def upload_file_block(
         "block": block.model_dump()
     })
 
-    return {"block_id": block_id, "block": block}
+    return api_response(
+        HTTPStatus.OK,
+        "File uploaded",
+        {"block_id": block_id, "block": block.model_dump()}
+    )
 
 
 @app.delete(
@@ -678,15 +816,24 @@ async def delete_block(request: DeleteBlockRequest):
     connection_id = request.connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     if request.user_id not in session.users:
-        raise HTTPException(status_code=403, detail="User not in session")
+        return api_response(
+            HTTPStatus.FORBIDDEN,
+            "User not in session"
+        )
 
     if request.block_id not in session.blocks:
-        raise HTTPException(status_code=404, detail="Block not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Block not found"
+        )
 
     session.delete_block(request.block_id)
 
@@ -696,7 +843,11 @@ async def delete_block(request: DeleteBlockRequest):
         "block_id": request.block_id
     })
 
-    return {"success": True}
+    return api_response(
+        HTTPStatus.OK,
+        "Block deleted",
+        {"success": True}
+    )
 
 
 @app.get(
@@ -714,29 +865,44 @@ async def download_block(connection_id: str, block_id: str):
     connection_id = connection_id.lower()
 
     if connection_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Session not found"
+        )
 
     session = sessions[connection_id]
 
     if block_id not in session.blocks:
-        raise HTTPException(status_code=404, detail="Block not found")
+        return api_response(
+            HTTPStatus.NOT_FOUND,
+            "Block not found"
+        )
 
     block = session.blocks[block_id]
 
     if block.type == "file":
         file_path = session.session_dir / block.filename
         if not file_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+            return api_response(
+                HTTPStatus.NOT_FOUND,
+                "File not found"
+            )
         # Use original filename for download if available, otherwise use server filename
         download_filename = block.original_filename if block.original_filename else block.filename
         return FileResponse(file_path, filename=download_filename)
     elif block.type == "text":
         text_file = session.session_dir / f"text_block_{block_id}.txt"
         if not text_file.exists():
-            raise HTTPException(status_code=404, detail="Text file not found")
+            return api_response(
+                HTTPStatus.NOT_FOUND,
+                "Text file not found"
+            )
         return FileResponse(text_file, filename=f"text_{block_id}.txt")
 
-    raise HTTPException(status_code=400, detail="Invalid block type")
+    return api_response(
+        HTTPStatus.BAD_REQUEST,
+        "Invalid block type"
+    )
 
 
 @app.websocket("/ws/{connection_id}/{user_id}")

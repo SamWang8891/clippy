@@ -1,7 +1,7 @@
 .clipboard-interface {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    flex: 1;
     background: var(--bg-secondary);
     animation: fadeIn 0.3s ease-out;
 }
