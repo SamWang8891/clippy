@@ -17,7 +17,7 @@ export function SessionEntry() {
         getConnectionIdLength().then(setIdLength).catch(() => {});
     }, []);
 
-    // Check URL for session ID on mount
+    // Check URL for session ID on mount and auto-join
     useEffect(() => {
         const pathname = window.location.pathname;
         const urlSessionId = pathname.replace('/', '').trim().toLowerCase();
@@ -26,6 +26,19 @@ export function SessionEntry() {
         if (urlSessionId && urlSessionId.length === idLength && pattern.test(urlSessionId)) {
             setMode('join');
             setSessionId(urlSessionId);
+            setLoading(true);
+            setError('');
+            joinSession(urlSessionId, null)
+                .then((data) => {
+                    window.history.pushState({}, '', `/${data.session_id}`);
+                    setSessionData(data);
+                })
+                .catch((err) => {
+                    setError(err.message);
+                })
+                .finally(() => {
+                    setLoading(false);
+                });
         }
     }, [idLength]);
 
