@@ -35,7 +35,7 @@ CONNECTION_ID_LENGTH = int(os.getenv("CONNECTION_ID_LENGTH", "6"))
 app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
-    version="1.2",
+    version="1.2.1",
     openapi_url="/api/v1/openapi.json",
     docs_url="/api/v1/docs",
 )

@@ -1,6 +1,6 @@
 [project]
 name = "clippy-backend"
-version = "1.2"
+version = "1.2.1"
 description = "Clippy - Collaborative clipboard backend"
 requires-python = ">=3.12"
 dependencies = [
