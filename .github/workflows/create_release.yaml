@@ -11,7 +11,7 @@ on:
         required: true
       release_notes:
         description: "Release notes"
-        required: true
+        required: false
 
 jobs:
   build_and_package:
