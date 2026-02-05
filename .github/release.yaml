@@ -1,47 +1,85 @@
-# Configuration for auto-generated release notes
-# See: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
+# .github/release.yaml
+# Auto-generated release notes configuration
+# Docs: https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 
 changelog:
   exclude:
     labels:
       - skip-changelog
       - duplicate
+      - invalid
+      - wontfix
     authors:
       - dependabot
-      - github-actions
+      - dependabot[bot]
+      - github-actions[bot]
 
   categories:
+    - title: "💥 Breaking Changes"
+      labels:
+        - breaking
+        - breaking-change
+
     - title: "🚀 New Features"
       labels:
         - enhancement
         - feature
+        - feat
 
     - title: "🐛 Bug Fixes"
       labels:
         - bug
         - fix
         - bugfix
+        - hotfix
+
+    - title: "⚡ Performance"
+      labels:
+        - performance
+        - perf
+
+    - title: "🔒 Security"
+      labels:
+        - security
 
     - title: "📚 Documentation"
       labels:
         - documentation
         - docs
 
-    - title: "🔧 Maintenance"
+    - title: "🎨 Styling"
       labels:
-        - chore
-        - maintenance
-        - refactor
+        - style
+        - ui
+        - ux
 
-    - title: "⬆️ Dependencies"
+    - title: "♻️ Refactoring"
+      labels:
+        - refactor
+        - cleanup
+        - tech-debt
+
+    - title: "🧪 Tests"
+      labels:
+        - test
+        - tests
+        - testing
+
+    - title: "📦 Dependencies"
       labels:
         - dependencies
         - deps
 
-    - title: "🔒 Security"
+    - title: "🔧 CI/CD & Build"
       labels:
-        - security
+        - ci
+        - build
+        - infrastructure
 
-    - title: "Other Changes"
+    - title: "🗑️ Deprecated"
+      labels:
+        - deprecated
+
+    - title: "📝 Other Changes"
       labels:
         - "*"
