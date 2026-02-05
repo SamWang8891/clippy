@@ -1,5 +1,5 @@
 import React, {useEffect, useState} from 'react';
-import {createSession, joinSession} from '../utils/api';
+import {createSession, getConnectionIdLength, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
 import './SessionEntry.css';
 
@@ -9,19 +9,25 @@ export function SessionEntry() {
     const [sessionId, setSessionId] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+    const [idLength, setIdLength] = useState(6);
     const {setSessionData} = useSession();
+
+    // Fetch connection ID length from backend on mount
+    useEffect(() => {
+        getConnectionIdLength().then(setIdLength).catch(() => {});
+    }, []);
 
     // Check URL for session ID on mount
     useEffect(() => {
         const pathname = window.location.pathname;
         const urlSessionId = pathname.replace('/', '').trim().toLowerCase();
 
-        // If URL contains a 6-character session ID, auto-populate join form
-        if (urlSessionId && urlSessionId.length === 6 && /^[a-z0-9]{6}$/.test(urlSessionId)) {
+        const pattern = new RegExp(`^[a-z0-9]{${idLength}}$`);
+        if (urlSessionId && urlSessionId.length === idLength && pattern.test(urlSessionId)) {
             setMode('join');
             setSessionId(urlSessionId);
         }
-    }, []);
+    }, [idLength]);
 
     const handleCreate = async (e) => {
         e.preventDefault();
@@ -102,8 +108,8 @@ export function SessionEntry() {
                                 type="text"
                                 value={sessionId}
                                 onChange={(e) => setSessionId(e.target.value.toLowerCase())}
-                                placeholder="Enter 6-character connection ID"
-                                maxLength={6}
+                                placeholder={`Enter ${idLength}-character connection ID`}
+                                maxLength={idLength}
                                 required
                                 disabled={loading}
                             />
@@ -118,7 +124,7 @@ export function SessionEntry() {
                                 disabled={loading}
                             />
                         </div>
-                        <button type="submit" disabled={loading || sessionId.length !== 6}>
+                        <button type="submit" disabled={loading || sessionId.length !== idLength}>
                             {loading ? 'Joining...' : 'Join Connection'}
                         </button>
                     </form>

@@ -50,6 +50,12 @@ async function handleApiResponse(response) {
  * @returns {Promise<Object>} Session data including connection_id, user_id, user_name, is_host
  * @throws {Error} If session creation fails (e.g., all connection IDs exhausted)
  */
+export async function getConnectionIdLength() {
+    const response = await fetch(`${getApiBase()}/session/id-length`);
+    const data = await handleApiResponse(response);
+    return data.connection_id_length;
+}
+
 export async function createSession(userName) {
     const response = await fetch(`${getApiBase()}/session/create`, {
         method: 'POST',
