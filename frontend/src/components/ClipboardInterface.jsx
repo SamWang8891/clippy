@@ -11,6 +11,7 @@ import './ClipboardInterface.css';
 
 export function Id({sessionData}) {
     const [showQrPopup, setShowQrPopup] = useState(false);
+    const [qrLoaded, setQrLoaded] = useState(false);
     const qrButtonRef = useRef(null);
     const popupRef = useRef(null);
     const toast = useToast();
@@ -27,6 +28,7 @@ export function Id({sessionData}) {
     };
 
     const handleToggleQr = () => {
+        if (!showQrPopup) setQrLoaded(false);
         setShowQrPopup(!showQrPopup);
     };
 
@@ -100,7 +102,25 @@ export function Id({sessionData}) {
             }}></div>
             <div style={{textAlign: 'center'}}>
                 <p style={{margin: '0 0 12px 0', fontSize: '14px', fontWeight: '500'}}>Scan to join connection</p>
-                <img src={qrCodeUrl} alt="QR Code" style={{display: 'block', margin: '0 auto'}}/>
+                {!qrLoaded && (
+                    <div style={{
+                        width: '200px', height: '200px', margin: '0 auto',
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        color: '#888'
+                    }}>
+                        <div style={{
+                            width: '28px', height: '28px', border: '3px solid #ddd',
+                            borderTopColor: '#888', borderRadius: '50%',
+                            animation: 'spin 0.8s linear infinite', marginBottom: '10px'
+                        }}/>
+                        <span style={{fontSize: '13px'}}>Generating QR Code</span>
+                    </div>
+                )}
+                <img
+                    src={qrCodeUrl} alt="QR Code"
+                    onLoad={() => setQrLoaded(true)}
+                    style={{display: qrLoaded ? 'block' : 'none', margin: '0 auto'}}
+                />
                 <p style={{
                     margin: '12px 0 0 0', fontSize: '12px', color: '#666', wordBreak: 'break-all'
                 }}>{currentUrl}</p>
