@@ -24,12 +24,16 @@ load_dotenv()
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8123"))
 ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS", "*")
-ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_RAW.split(",")]
-ENCRYPTION_PASSPHRASE = os.getenv("ENCRYPTION_PASSPHRASE", "default-passphrase-please-change")
-ENCRYPTION_SALT = os.getenv("ENCRYPTION_SALT", "default-salt-please-change")
+ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_RAW.split(",") if origin.strip()]
+# allow_credentials cannot be combined with the "*" wildcard per the CORS spec —
+# browsers will reject the response. Only enable credentials when an explicit allowlist is set.
+ALLOW_CREDENTIALS = ALLOWED_ORIGINS != ["*"]
 MAX_FILE_SIZE_GIB = float(os.getenv("MAX_UPLOAD_SIZE_GIB", "1"))
 SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "3600"))
 CONNECTION_ID_LENGTH = int(os.getenv("CONNECTION_ID_LENGTH", "6"))
+# Grace period before a disconnected user is removed from the session, allowing
+# brief network blips and page refreshes to reconnect without churn.
+DISCONNECT_GRACE_SECONDS = int(os.getenv("DISCONNECT_GRACE_SECONDS", "10"))
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -44,7 +48,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -142,12 +146,15 @@ class Session:
         self.allow_join = True
         self.last_activity = datetime.now()
         self.websockets: Dict[str, WebSocket] = {}
+        # Pending eviction tasks keyed by user_id so reconnects can cancel them.
+        self.pending_disconnects: Dict[str, asyncio.Task] = {}
         self.session_dir = UPLOAD_DIR / connection_id
         self.session_dir.mkdir(exist_ok=True)
 
     def update_activity(self):
         """Update the last activity timestamp to prevent session timeout."""
         self.last_activity = datetime.now()
+        mark_sessions_dirty()
 
     def is_expired(self) -> bool:
         """Check if session has exceeded the timeout period."""
@@ -182,6 +189,9 @@ class Session:
             del self.users[user_id]
         if user_id in self.websockets:
             del self.websockets[user_id]
+        pending = self.pending_disconnects.pop(user_id, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
         self.update_activity()
 
     def transfer_host(self, new_host_id: str):
@@ -224,12 +234,90 @@ class Session:
                 continue
             try:
                 await ws.send_json(message)
-            except:
+            except Exception:
                 pass
+
+    def to_dict(self) -> dict:
+        """Serialize persistable session state. Sockets and tasks are runtime-only."""
+        return {
+            "connection_id": self.connection_id,
+            "users": {uid: u.model_dump() for uid, u in self.users.items()},
+            "blocks": {bid: b.model_dump() for bid, b in self.blocks.items()},
+            "allow_join": self.allow_join,
+            "last_activity": self.last_activity.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Session":
+        instance = cls.__new__(cls)
+        instance.connection_id = data["connection_id"]
+        instance.users = {uid: User(**u) for uid, u in data.get("users", {}).items()}
+        instance.blocks = {bid: Block(**b) for bid, b in data.get("blocks", {}).items()}
+        instance.allow_join = data.get("allow_join", True)
+        instance.last_activity = datetime.fromisoformat(data["last_activity"])
+        instance.websockets = {}
+        instance.pending_disconnects = {}
+        instance.session_dir = UPLOAD_DIR / instance.connection_id
+        instance.session_dir.mkdir(exist_ok=True)
+        return instance
 
 
 # Global session storage - Maps connection_id to Session objects
 sessions: Dict[str, Session] = {}
+
+# Persistence: snapshot session metadata to disk so a restart doesn't wipe state.
+# A dirty flag + periodic flush avoids touching the disk on every mutation.
+SESSIONS_FILE = UPLOAD_DIR / ".sessions.json"
+PERSIST_INTERVAL_SECONDS = 2
+_sessions_dirty = False
+
+
+def mark_sessions_dirty() -> None:
+    global _sessions_dirty
+    _sessions_dirty = True
+
+
+async def save_sessions() -> None:
+    """Atomically snapshot the sessions dict to JSON."""
+    payload = json.dumps({sid: s.to_dict() for sid, s in sessions.items()})
+    tmp_path = SESSIONS_FILE.with_suffix(".tmp")
+    async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
+        await f.write(payload)
+    os.replace(tmp_path, SESSIONS_FILE)
+
+
+def load_sessions_sync() -> None:
+    """Load persisted sessions on startup. Sync because called outside the loop."""
+    if not SESSIONS_FILE.exists():
+        return
+    try:
+        with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Failed to load sessions snapshot: {e}")
+        return
+
+    for sid, sdata in data.items():
+        try:
+            sessions[sid] = Session.from_dict(sdata)
+        except Exception as e:
+            print(f"Skipping malformed session {sid}: {e}")
+
+
+async def persistence_loop() -> None:
+    """Background task that flushes the dirty flag at a fixed interval."""
+    global _sessions_dirty
+    while True:
+        await asyncio.sleep(PERSIST_INTERVAL_SECONDS)
+        if not _sessions_dirty:
+            continue
+        _sessions_dirty = False
+        try:
+            await save_sessions()
+        except Exception as e:
+            # Re-arm the dirty flag so we retry on the next tick.
+            _sessions_dirty = True
+            print(f"Failed to persist sessions: {e}")
 
 
 def api_response(status: HTTPStatus, message: str, data: Optional[dict] = None) -> JSONResponse:
@@ -303,6 +391,33 @@ def generate_random_name() -> str:
     return f"{random.choice(adjectives)}{random.choice(nouns)}"
 
 
+async def _teardown_session(connection_id: str, reason: str):
+    """Notify users, close sockets, cancel pending tasks, and delete a session."""
+    session = sessions.pop(connection_id, None)
+    if session is None:
+        return
+
+    for task in list(session.pending_disconnects.values()):
+        if not task.done():
+            task.cancel()
+    session.pending_disconnects.clear()
+
+    await session.broadcast({"type": "session_destroyed", "reason": reason})
+
+    for ws in list(session.websockets.values()):
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    session.websockets.clear()
+
+    if session.session_dir.exists():
+        import shutil
+        shutil.rmtree(session.session_dir, ignore_errors=True)
+
+    mark_sessions_dirty()
+
+
 async def cleanup_expired_sessions():
     """
     Background task that periodically checks for and removes expired sessions.
@@ -312,63 +427,62 @@ async def cleanup_expired_sessions():
     closes WebSockets, deletes files, and removes sessions from memory.
     """
     while True:
-        await asyncio.sleep(60)  # Check every minute
+        await asyncio.sleep(60)
         expired = [sid for sid, session in sessions.items() if session.is_expired()]
         for sid in expired:
-            session = sessions[sid]
-            # Notify users before cleanup
-            await session.broadcast({
-                "type": "session_destroyed",
-                "reason": "timeout"
-            })
-            # Close all websockets
-            for ws in session.websockets.values():
-                try:
-                    await ws.close()
-                except:
-                    pass
-            # Clean up files
-            if session.session_dir.exists():
-                import shutil
-                shutil.rmtree(session.session_dir)
-            del sessions[sid]
+            await _teardown_session(sid, "timeout")
 
 
 # API Endpoints
 @app.on_event("startup")
 async def startup_event():
-    # Clean up all files in uploads directory on startup
+    # Restore sessions from the previous process (if any) before pruning state.
+    load_sessions_sync()
+
     import shutil
     if UPLOAD_DIR.exists():
+        valid_session_ids = set(sessions.keys())
+        preserved = {SESSIONS_FILE.name, SESSIONS_FILE.with_suffix(".tmp").name, ".gitkeep"}
         for item in UPLOAD_DIR.iterdir():
             if item.is_dir():
-                shutil.rmtree(item)
-            elif item.name != '.gitkeep':
-                item.unlink()
-        print(f"Cleaned up uploads directory: {UPLOAD_DIR}")
+                if item.name not in valid_session_ids:
+                    shutil.rmtree(item, ignore_errors=True)
+            elif item.name not in preserved:
+                try:
+                    item.unlink()
+                except OSError:
+                    pass
+        print(
+            f"Startup: restored {len(sessions)} session(s); pruned orphan entries in {UPLOAD_DIR}"
+        )
 
-    # Start background cleanup task
     asyncio.create_task(cleanup_expired_sessions())
+    asyncio.create_task(persistence_loop())
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Flush any pending session changes so a clean restart restores everything."""
+    try:
+        await save_sessions()
+    except Exception as e:
+        print(f"Failed to flush sessions on shutdown: {e}")
 
 
 @app.get(
     "/api/v1/config",
     summary="Get Configuration",
-    description="Retrieve encryption configuration and file size limits for the client"
+    description="Retrieve client configuration (file size limits)."
 )
 async def get_config():
     """
-    Get client configuration including encryption keys and file upload limits.
-
-    Returns encryption passphrase, salt, and maximum file size in bytes.
-    These values are used by the client for end-to-end encryption.
+    Get client configuration. Encryption keys are generated client-side and
+    transported via the URL fragment, so the server never sees them.
     """
     return api_response(
         HTTPStatus.OK,
         "Configuration retrieved",
         {
-            "encryption_passphrase": ENCRYPTION_PASSPHRASE,
-            "encryption_salt": ENCRYPTION_SALT,
             "max_file_size_bytes": MAX_FILE_SIZE,
         }
     )
@@ -422,6 +536,7 @@ async def create_session(request: CreateSessionRequest):
 
     session = Session(connection_id, user_id, user_name)
     sessions[connection_id] = session
+    mark_sessions_dirty()
 
     return api_response(
         HTTPStatus.OK,
@@ -558,25 +673,7 @@ async def destroy_session(connection_id: str, user_id: str):
             "Only host can destroy session"
         )
 
-    # Notify all users
-    await session.broadcast({
-        "type": "session_destroyed",
-        "reason": "host_action"
-    })
-
-    # Close all websockets
-    for ws in session.websockets.values():
-        try:
-            await ws.close()
-        except:
-            pass
-
-    # Clean up files
-    if session.session_dir.exists():
-        import shutil
-        shutil.rmtree(session.session_dir)
-
-    del sessions[connection_id]
+    await _teardown_session(connection_id, "host_action")
 
     return api_response(
         HTTPStatus.OK,
@@ -724,7 +821,7 @@ async def create_text_block(request: CreateBlockRequest):
     # Save text to file if it's a text block
     if request.type == "text" and request.content:
         text_file = session.session_dir / f"text_block_{block_id}.txt"
-        async with aiofiles.open(text_file, "w") as f:
+        async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
             await f.write(request.content)
 
     session.add_block(block)
@@ -775,27 +872,40 @@ async def upload_file_block(
             "User not in session"
         )
 
-    # Check file size
-    file.file.seek(0, 2)
-    file_size = file.file.tell()
-    file.file.seek(0)
+    block_id = str(uuid.uuid4())
 
-    if file_size > MAX_FILE_SIZE:
+    # Only keep the suffix from the user-supplied name and strip directory characters
+    # so a malicious filename like "../../etc/passwd" can't escape the session dir.
+    raw_suffix = Path(file.filename or "").suffix
+    safe_suffix = "".join(c for c in raw_suffix if c.isalnum() or c in "._-")[:32]
+    safe_filename = f"file_{block_id}{safe_suffix}"
+    file_path = session.session_dir / safe_filename
+
+    # Stream the upload to disk in chunks so a 1 GiB file doesn't sit in memory.
+    chunk_size = 1024 * 1024
+    bytes_written = 0
+    try:
+        async with aiofiles.open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > MAX_FILE_SIZE:
+                    break
+                await f.write(chunk)
+    except Exception:
+        if file_path.exists():
+            file_path.unlink()
+        raise
+
+    if bytes_written > MAX_FILE_SIZE:
+        if file_path.exists():
+            file_path.unlink()
         return api_response(
             HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
             f"File too large. Max size: {MAX_FILE_SIZE} bytes"
         )
-
-    block_id = str(uuid.uuid4())
-
-    # Save file with generated name but preserve original
-    file_extension = Path(file.filename).suffix
-    safe_filename = f"file_{block_id}{file_extension}"
-    file_path = session.session_dir / safe_filename
-
-    async with aiofiles.open(file_path, "wb") as f:
-        content = await file.read()
-        await f.write(content)
 
     # Create block with both server filename and original filename
     block = Block(
@@ -926,6 +1036,39 @@ async def download_block(connection_id: str, block_id: str):
     )
 
 
+async def _remove_user_after_grace(connection_id: str, user_id: str):
+    """
+    Wait for the grace period, then evict the user if they haven't reconnected.
+
+    If the host leaves and other users remain, host privileges are auto-transferred
+    so the session keeps a host and the remaining users can still manage it.
+    """
+    try:
+        await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+    session = sessions.get(connection_id)
+    if session is None:
+        return
+    user = session.users.get(user_id)
+    if user is None or user_id in session.websockets:
+        return
+
+    was_host = user.is_host
+    session.remove_user(user_id)
+
+    await session.broadcast({"type": "user_left", "user_id": user_id})
+
+    if was_host and session.users:
+        new_host_id = next(iter(session.users))
+        session.transfer_host(new_host_id)
+        await session.broadcast({
+            "type": "host_transferred",
+            "new_host_id": new_host_id,
+        })
+
+
 @app.websocket("/ws/{connection_id}/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: str):
     connection_id = connection_id.lower()
@@ -941,27 +1084,38 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: 
         return
 
     await websocket.accept()
+
+    # Cancel any pending eviction from a previous disconnect — the user is back.
+    pending = session.pending_disconnects.pop(user_id, None)
+    if pending is not None:
+        pending.cancel()
+
     session.websockets[user_id] = websocket
     session.update_activity()
 
     try:
         while True:
             data = await websocket.receive_text()
-            # Keep connection alive / handle ping-pong
-            message = json.loads(data)
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                continue
             if message.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
                 session.update_activity()
     except WebSocketDisconnect:
-        # Don't remove user on disconnect - they might reconnect
-        # Just remove the websocket connection
         pass
     except Exception as e:
         print(f"WebSocket error: {e}")
     finally:
-        # Only remove the websocket connection, not the user
-        if user_id in session.websockets:
+        # Only drop the websocket reference if it still points at this connection.
+        # A reconnect may have already replaced it during the disconnect handling.
+        if session.websockets.get(user_id) is websocket:
             del session.websockets[user_id]
+        if connection_id in sessions and user_id in session.users:
+            session.pending_disconnects[user_id] = asyncio.create_task(
+                _remove_user_after_grace(connection_id, user_id)
+            )
 
 
 if __name__ == "__main__":

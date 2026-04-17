@@ -4,6 +4,7 @@ import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useWebSocket} from '../hooks/useWebSocket';
 import {createTextBlock, deleteBlock, getSession, uploadFileBlock} from '../utils/api';
+import {clearSessionKey, setSessionKey} from '../utils/encryption';
 import {BlockItem} from './BlockItem';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
@@ -151,16 +152,30 @@ export function ClipboardInterface() {
     const [isCreating, setIsCreating] = useState(false);
     const [newBlockType, setNewBlockType] = useState('text');
 
-    // Fetch session data and ensure URL is correct
+    // Install the session encryption key and keep the URL in sync. The key
+    // travels in the URL fragment (#…) so the server never receives it.
     useEffect(() => {
-        if (sessionData?.connection_id) {
-            loadSession();
-            // Ensure URL matches the session ID
-            const currentPath = window.location.pathname.replace('/', '');
-            if (currentPath !== sessionData.connection_id) {
-                window.history.replaceState({}, '', `/${sessionData.connection_id}`);
-            }
+        if (!sessionData?.connection_id) return;
+
+        try {
+            setSessionKey(sessionData.encryption_key || null);
+        } catch (err) {
+            console.error('Failed to install session key:', err);
+            setSessionKey(null);
         }
+
+        loadSession();
+
+        const expectedHash = sessionData.encryption_key ? `#${sessionData.encryption_key}` : '';
+        const expectedUrl = `/${sessionData.connection_id}${expectedHash}`;
+        const currentUrl = `${window.location.pathname}${window.location.hash}`;
+        if (currentUrl !== expectedUrl) {
+            window.history.replaceState({}, '', expectedUrl);
+        }
+
+        return () => {
+            clearSessionKey();
+        };
     }, [sessionData]);
 
     const loadSession = async () => {
@@ -213,11 +228,13 @@ export function ClipboardInterface() {
                 break;
 
             case 'user_left':
-                setUsers((prev) => prev.filter((u) => u.id !== message.user_id));
-                const leftUser = users.find((u) => u.id === message.user_id);
-                if (leftUser) {
-                    showNotification(`${leftUser.name} left the connection`);
-                }
+                setUsers((prev) => {
+                    const leftUser = prev.find((u) => u.id === message.user_id);
+                    if (leftUser) {
+                        showNotification(`${leftUser.name} left the connection`);
+                    }
+                    return prev.filter((u) => u.id !== message.user_id);
+                });
                 break;
 
             case 'block_created':
@@ -247,7 +264,7 @@ export function ClipboardInterface() {
                 }, 2000);
                 break;
         }
-    }, [users, sessionData]);
+    }, [sessionData]);
 
     const {isConnected} = useWebSocket(sessionData?.connection_id, sessionData?.user_id, handleWebSocketMessage);
 

@@ -6,16 +6,15 @@ import {SessionEntry} from './components/SessionEntry';
 import {ClipboardInterface} from './components/ClipboardInterface';
 import {Footer} from './components/Footer';
 import {initConfig} from './utils/config';
-import {initEncryption} from './utils/encryption';
 
 function AppContent() {
     const {sessionData} = useSession();
     const [isReady, setIsReady] = useState(false);
 
     useEffect(() => {
-        // Initialize config first, then encryption
+        // Resolve the backend URL. Encryption keys are per-session and set
+        // when a session is created or joined, not at app startup.
         initConfig()
-            .then(() => initEncryption())
             .then(() => setIsReady(true))
             .catch((err) => {
                 console.error('Failed to initialize:', err);

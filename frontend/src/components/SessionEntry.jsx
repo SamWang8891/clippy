@@ -1,7 +1,25 @@
 import React, {useEffect, useState} from 'react';
 import {createSession, getConnectionIdLength, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
+import {generateSessionKey} from '../utils/encryption';
 import './SessionEntry.css';
+
+/**
+ * Read the encryption key from the URL fragment (`#key`). The fragment is
+ * never sent to the server, so the key stays on the client side.
+ */
+function readKeyFromHash() {
+    if (typeof window === 'undefined' || !window.location.hash) return null;
+    return window.location.hash.replace(/^#/, '').trim() || null;
+}
+
+/**
+ * Replace the URL with `/{connectionId}#{key}` without triggering navigation.
+ */
+function syncUrl(connectionId, key) {
+    const hash = key ? `#${key}` : '';
+    window.history.replaceState({}, '', `/${connectionId}${hash}`);
+}
 
 export function SessionEntry() {
     const [mode, setMode] = useState('create');
@@ -12,12 +30,12 @@ export function SessionEntry() {
     const [idLength, setIdLength] = useState(6);
     const {setSessionData} = useSession();
 
-    // Fetch connection ID length from backend on mount
     useEffect(() => {
         getConnectionIdLength().then(setIdLength).catch(() => {});
     }, []);
 
-    // Check URL for session ID on mount and auto-join
+    // If the URL points at a connection, auto-join. The encryption key, when
+    // present, is in the URL fragment.
     useEffect(() => {
         const pathname = window.location.pathname;
         const urlSessionId = pathname.replace('/', '').trim().toLowerCase();
@@ -28,10 +46,12 @@ export function SessionEntry() {
             setSessionId(urlSessionId);
             setLoading(true);
             setError('');
+            const keyFromHash = readKeyFromHash();
             joinSession(urlSessionId, null)
                 .then((data) => {
-                    window.history.pushState({}, '', `/${data.session_id}`);
-                    setSessionData(data);
+                    const enriched = {...data, encryption_key: keyFromHash};
+                    syncUrl(enriched.connection_id, keyFromHash);
+                    setSessionData(enriched);
                 })
                 .catch((err) => {
                     setError(err.message);
@@ -48,10 +68,11 @@ export function SessionEntry() {
         setError('');
 
         try {
+            const key = generateSessionKey();
             const data = await createSession(userName || null);
-            // Update URL with session ID
-            window.history.pushState({}, '', `/${data.session_id}`);
-            setSessionData(data);
+            const enriched = {...data, encryption_key: key};
+            syncUrl(enriched.connection_id, key);
+            setSessionData(enriched);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -66,9 +87,11 @@ export function SessionEntry() {
 
         try {
             const data = await joinSession(sessionId, userName || null);
-            // Update URL with session ID
-            window.history.pushState({}, '', `/${data.session_id}`);
-            setSessionData(data);
+            // Manual ID entry has no key — user can join but won't be able to
+            // decrypt blocks unless they obtain the key out-of-band.
+            const enriched = {...data, encryption_key: null};
+            syncUrl(enriched.connection_id, null);
+            setSessionData(enriched);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -126,6 +149,9 @@ export function SessionEntry() {
                                 required
                                 disabled={loading}
                             />
+                            <small style={{color: '#888', display: 'block', marginTop: '4px'}}>
+                                Tip: open the full share URL to decrypt content automatically.
+                            </small>
                         </div>
                         <div className="form-group">
                             <label>Your Name (optional)</label>

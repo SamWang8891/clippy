@@ -1,77 +1,95 @@
 /**
- * Client-side encryption utilities using AES encryption with PBKDF2 key derivation.
+ * Per-session AES encryption with a key generated client-side and shared
+ * out-of-band via the URL fragment. The server never sees the key, so blocks
+ * are end-to-end encrypted: anyone with the share URL can read; the server
+ * (and anyone with raw API access) cannot.
  *
- * Provides end-to-end encryption for text and files before sending to the server.
- * The server stores only encrypted data and cannot read the content.
+ * Implementation notes:
+ * - Key is 32 random bytes (AES-256), encoded as base64url for the fragment.
+ * - High-entropy random key means no PBKDF2 / iteration count is required.
+ * - AES-CBC via crypto-js. Authenticated encryption (GCM) would be stronger
+ *   but requires a Web Crypto async refactor across all call sites.
  */
 
 import CryptoJS from 'crypto-js';
-import {getBackendUrl} from './config';
 
-// Encryption configuration fetched from server on initialization
-let encryptionConfig = null;
+let sessionKey = null; // CryptoJS WordArray
 
 /**
- * Initialize encryption by fetching the passphrase and salt from the server.
- * Must be called before using encrypt() or decrypt().
- *
- * @returns {Promise<Object>} Configuration object with passphrase, salt, and file size limit
+ * Generate a fresh 256-bit session key, returning the base64url-encoded form
+ * suitable for embedding in a URL fragment.
  */
-export async function initEncryption() {
-    const backendUrl = getBackendUrl();
-    const response = await fetch(`${backendUrl}/api/v1/config`);
-    const json = await response.json();
-
-    // Handle standardized response format
-    const config = json.data || json;
-
-    encryptionConfig = {
-        passphrase: config.encryption_passphrase,
-        salt: config.encryption_salt,
-    };
-    return config;
+export function generateSessionKey() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return bytesToBase64Url(bytes);
 }
 
 /**
- * Encrypt data using AES encryption.
- *
- * @param {string} data - Plain text data to encrypt
- * @returns {string} Encrypted data as a base64 string
- * @throws {Error} If encryption hasn't been initialized
+ * Install the active session key from its base64url-encoded form.
+ * Must be called before encrypt() / decrypt().
  */
+export function setSessionKey(base64UrlKey) {
+    if (!base64UrlKey) {
+        sessionKey = null;
+        return;
+    }
+    const bytes = base64UrlToBytes(base64UrlKey);
+    if (bytes.length !== 32) {
+        throw new Error(`Invalid session key length: expected 32 bytes, got ${bytes.length}`);
+    }
+    sessionKey = CryptoJS.lib.WordArray.create(bytes);
+}
+
+export function clearSessionKey() {
+    sessionKey = null;
+}
+
+export function hasSessionKey() {
+    return sessionKey !== null;
+}
+
 export function encrypt(data) {
-    if (!encryptionConfig) {
-        throw new Error('Encryption not initialized');
+    if (!sessionKey) {
+        throw new Error('Session key not set');
     }
-
-    const key = CryptoJS.PBKDF2(
-        encryptionConfig.passphrase,
-        encryptionConfig.salt,
-        {keySize: 256 / 32, iterations: 1000}
-    );
-
-    const encrypted = CryptoJS.AES.encrypt(data, key.toString());
-    return encrypted.toString();
+    return CryptoJS.AES.encrypt(data, sessionKey, {
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7,
+    }).toString();
 }
 
-/**
- * Decrypt AES-encrypted data.
- *
- * @param {string} encryptedData - Encrypted data as a base64 string
- * @returns {string} Decrypted plain text
- * @throws {Error} If encryption hasn't been initialized
- */
 export function decrypt(encryptedData) {
-    if (!encryptionConfig) {
-        throw new Error('Encryption not initialized');
+    if (!sessionKey) {
+        throw new Error('Session key not set');
     }
+    const decrypted = CryptoJS.AES.decrypt(encryptedData, sessionKey, {
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7,
+    });
+    const text = decrypted.toString(CryptoJS.enc.Utf8);
+    if (!text && encryptedData) {
+        // crypto-js returns "" on bad key/ciphertext rather than throwing.
+        throw new Error('Decryption failed');
+    }
+    return text;
+}
 
-    const key = CryptoJS.PBKDF2(
-        encryptionConfig.passphrase,
-        encryptionConfig.salt,
-        {keySize: 256 / 32, iterations: 1000}
-    );
+function bytesToBase64Url(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
 
-    const decrypted = CryptoJS.AES.decrypt(encryptedData, key.toString());
-    return decrypted.toString(CryptoJS.enc.Utf8);
+function base64UrlToBytes(b64url) {
+    const padded = b64url.replace(/-/g, '+').replace(/_/g, '/')
+        + '==='.slice((b64url.length + 3) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
 }

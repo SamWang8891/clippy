@@ -6,14 +6,23 @@ export function useWebSocket(sessionId, userId, onMessage) {
     const wsRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
     const pingIntervalRef = useRef(null);
+    // Latest onMessage handler in a ref so changing it does not tear down the socket.
+    const onMessageRef = useRef(onMessage);
+
+    useEffect(() => {
+        onMessageRef.current = onMessage;
+    }, [onMessage]);
 
     useEffect(() => {
         if (!sessionId || !userId) return;
 
+        let cancelled = false;
+
         const connect = () => {
-            // Get backend URL from runtime config
+            if (cancelled) return;
+
             const apiUrl = getBackendUrl();
-            const wsUrl = apiUrl.replace('http://', 'ws://').replace('https://', 'wss://');
+            const wsUrl = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
             const fullWsUrl = `${wsUrl}/ws/${sessionId}/${userId}`;
 
             console.log('Connecting to WebSocket:', fullWsUrl);
@@ -22,18 +31,23 @@ export function useWebSocket(sessionId, userId, onMessage) {
             wsRef.current.onopen = () => {
                 setIsConnected(true);
 
-                // Start ping interval to keep connection alive
                 pingIntervalRef.current = setInterval(() => {
                     if (wsRef.current?.readyState === WebSocket.OPEN) {
                         wsRef.current.send(JSON.stringify({type: 'ping'}));
                     }
-                }, 30000); // Ping every 30 seconds
+                }, 30000);
             };
 
             wsRef.current.onmessage = (event) => {
-                const message = JSON.parse(event.data);
+                let message;
+                try {
+                    message = JSON.parse(event.data);
+                } catch (err) {
+                    console.warn('Invalid WebSocket payload:', err);
+                    return;
+                }
                 if (message.type !== 'pong') {
-                    onMessage(message);
+                    onMessageRef.current?.(message);
                 }
             };
 
@@ -41,12 +55,12 @@ export function useWebSocket(sessionId, userId, onMessage) {
                 setIsConnected(false);
                 if (pingIntervalRef.current) {
                     clearInterval(pingIntervalRef.current);
+                    pingIntervalRef.current = null;
                 }
 
-                // Attempt to reconnect after 3 seconds
-                reconnectTimeoutRef.current = setTimeout(() => {
-                    connect();
-                }, 3000);
+                if (!cancelled) {
+                    reconnectTimeoutRef.current = setTimeout(connect, 3000);
+                }
             };
 
             wsRef.current.onerror = () => {
@@ -57,17 +71,22 @@ export function useWebSocket(sessionId, userId, onMessage) {
         connect();
 
         return () => {
+            cancelled = true;
             if (pingIntervalRef.current) {
                 clearInterval(pingIntervalRef.current);
+                pingIntervalRef.current = null;
             }
             if (reconnectTimeoutRef.current) {
                 clearTimeout(reconnectTimeoutRef.current);
+                reconnectTimeoutRef.current = null;
             }
             if (wsRef.current) {
+                wsRef.current.onclose = null;
                 wsRef.current.close();
+                wsRef.current = null;
             }
         };
-    }, [sessionId, userId, onMessage]);
+    }, [sessionId, userId]);
 
     return {isConnected};
 }

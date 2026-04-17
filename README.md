@@ -37,7 +37,7 @@ A web-based application that allows users to share text and files in real-time t
 Tired of sharing text / files across different computers? Try this clippy!
 
 - **Session-based sharing**: Create or join sessions using short, custom-length IDs
-- **End-to-end encryption**: All text and files are encrypted client-side before transmission
+- **End-to-end encryption**: Each session has a 256-bit key generated client-side and shared via the URL fragment (`#…`), which browsers never send to the server — the backend only ever sees ciphertext
 - **Real-time collaboration**: See blocks appear instantly when other users create them
 - **File uploads**: Support for small file uploads
 - **User management**:
