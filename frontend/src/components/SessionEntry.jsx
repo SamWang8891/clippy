@@ -60,7 +60,7 @@ export function SessionEntry() {
                     setLoading(false);
                 });
         }
-    }, [idLength]);
+    }, [idLength, setSessionData]);
 
     const handleCreate = async (e) => {
         e.preventDefault();

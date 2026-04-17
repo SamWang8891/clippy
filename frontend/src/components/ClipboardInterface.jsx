@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useState} from 'react';
 import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
@@ -6,138 +6,10 @@ import {useWebSocket} from '../hooks/useWebSocket';
 import {createTextBlock, deleteBlock, getSession, uploadFileBlock} from '../utils/api';
 import {clearSessionKey, setSessionKey} from '../utils/encryption';
 import {BlockItem} from './BlockItem';
+import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
 import './ClipboardInterface.css';
-
-export function Id({sessionData}) {
-    const [showQrPopup, setShowQrPopup] = useState(false);
-    const [qrLoaded, setQrLoaded] = useState(false);
-    const qrButtonRef = useRef(null);
-    const popupRef = useRef(null);
-    const toast = useToast();
-
-    const handleCopyUrl = async () => {
-        const url = window.location.href;
-        try {
-            await navigator.clipboard.writeText(url);
-            toast.success('URL copied to clipboard!');
-        } catch (err) {
-            console.error('Failed to copy URL:', err);
-            toast.error('Failed to copy URL');
-        }
-    };
-
-    const handleToggleQr = () => {
-        if (!showQrPopup) setQrLoaded(false);
-        setShowQrPopup(!showQrPopup);
-    };
-
-    // Close popup when clicking outside
-    useEffect(() => {
-        const handleClickOutside = (event) => {
-            if (showQrPopup && popupRef.current && !popupRef.current.contains(event.target) && qrButtonRef.current && !qrButtonRef.current.contains(event.target)) {
-                setShowQrPopup(false);
-            }
-        };
-
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [showQrPopup]);
-
-    const currentUrl = window.location.href;
-    const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(currentUrl)}`;
-
-    return (<div style={{position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '8px'}}>
-        Connection ID: <strong>{sessionData?.connection_id}</strong>
-        <button onClick={handleCopyUrl} title="Copy URL to clipboard" style={{
-            background: 'none', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center'
-        }}>
-            <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px"
-                 fill="currentColor">
-                <path
-                    d="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-560h80v560h440v80H200Zm160-240v-480 480Z"/>
-            </svg>
-        </button>
-        <button ref={qrButtonRef} onClick={handleToggleQr} title="Show QR code" style={{
-            background: 'none', border: 'none', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center'
-        }}>
-            <svg xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px"
-                 fill="currentColor">
-                <path
-                    d="M120-520v-320h320v320H120Zm80-80h160v-160H200v160Zm-80 480v-320h320v320H120Zm80-80h160v-160H200v160Zm320-320v-320h320v320H520Zm80-80h160v-160H600v160Zm160 480v-80h80v80h-80ZM520-360v-80h80v80h-80Zm80 80v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm80 80v-80h80v80h-80Zm80-80v-80h80v80h-80Zm0-160v-80h80v80h-80Zm80 80v-80h80v80h-80Z"/>
-            </svg>
-        </button>
-
-        {showQrPopup && (<div ref={popupRef} className="qr-popup" style={{
-            position: 'absolute',
-            top: '100%',
-            right: '0',
-            marginTop: '8px',
-            background: 'white',
-            border: '1px solid #ddd',
-            borderRadius: '8px',
-            padding: '16px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-            zIndex: 1000
-        }}>
-            <div style={{
-                position: 'absolute',
-                top: '-8px',
-                right: '20px',
-                width: '0',
-                height: '0',
-                borderLeft: '8px solid transparent',
-                borderRight: '8px solid transparent',
-                borderBottom: '8px solid #ddd'
-            }}></div>
-            <div style={{
-                position: 'absolute',
-                top: '-7px',
-                right: '21px',
-                width: '0',
-                height: '0',
-                borderLeft: '7px solid transparent',
-                borderRight: '7px solid transparent',
-                borderBottom: '7px solid white'
-            }}></div>
-            <div style={{textAlign: 'center'}}>
-                <p style={{margin: '0 0 12px 0', fontSize: '14px', fontWeight: '500'}}>Scan to join connection</p>
-                {!qrLoaded && (
-                    <div style={{
-                        width: '200px', height: '200px', margin: '0 auto',
-                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                        color: '#888'
-                    }}>
-                        <div style={{
-                            width: '28px', height: '28px', border: '3px solid #ddd',
-                            borderTopColor: '#888', borderRadius: '50%',
-                            animation: 'spin 0.8s linear infinite', marginBottom: '10px'
-                        }}/>
-                        <span style={{fontSize: '13px'}}>Generating QR Code</span>
-                    </div>
-                )}
-                <img
-                    src={qrCodeUrl} alt="QR Code"
-                    onLoad={() => setQrLoaded(true)}
-                    style={{display: qrLoaded ? 'block' : 'none', margin: '0 auto'}}
-                />
-                <p style={{
-                    margin: '12px 0 0 0', fontSize: '12px', color: '#666', wordBreak: 'break-all'
-                }}>{currentUrl}</p>
-                <button onClick={() => setShowQrPopup(false)} style={{
-                    marginTop: '12px',
-                    padding: '6px 16px',
-                    background: '#f0f0f0',
-                    border: '1px solid #ddd',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                }}>Close
-                </button>
-            </div>
-        </div>)}
-    </div>);
-}
 
 
 export function ClipboardInterface() {
@@ -176,11 +48,13 @@ export function ClipboardInterface() {
         return () => {
             clearSessionKey();
         };
+        // loadSession closes over sessionData; safe to omit per design.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionData]);
 
     const loadSession = async () => {
         try {
-            const data = await getSession(sessionData.connection_id);
+            const data = await getSession(sessionData.connection_id, sessionData.user_id);
             setSession(data);
             setUsers(data.users);
             setBlocks(data.blocks);
@@ -189,35 +63,32 @@ export function ClipboardInterface() {
         }
     };
 
-    // Validate session on page refresh/mount
+    // Validate session on page refresh/mount. Intentionally runs once.
     useEffect(() => {
         const validateSession = async () => {
-            if (sessionData?.connection_id) {
-                try {
-                    // Try to fetch the session to see if it still exists
-                    await getSession(sessionData.connection_id);
-                } catch (err) {
-                    // Session doesn't exist or is invalid
-                    const shouldGoHome = await confirm({
-                        title: 'Connection Expired',
-                        message: 'Your connection has expired or is no longer available. Would you like to return to the home page?',
-                        confirmText: 'Go Home',
-                        cancelText: 'Stay',
-                        confirmStyle: 'primary'
-                    });
+            if (!sessionData?.connection_id) return;
+            try {
+                await getSession(sessionData.connection_id, sessionData.user_id);
+            } catch {
+                const shouldGoHome = await confirm({
+                    title: 'Connection Expired',
+                    message: 'Your connection has expired or is no longer available. Would you like to return to the home page?',
+                    confirmText: 'Go Home',
+                    cancelText: 'Stay',
+                    confirmStyle: 'primary'
+                });
 
-                    if (shouldGoHome) {
-                        clearSession();
-                        // Clear URL back to home
-                        window.history.pushState({}, '', '/');
-                        window.location.reload();
-                    }
+                if (shouldGoHome) {
+                    clearSession();
+                    window.history.pushState({}, '', '/');
+                    window.location.reload();
                 }
             }
         };
 
         validateSession();
-    }, []); // Empty dependency array = runs once on mount
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // WebSocket message handler
     const handleWebSocketMessage = useCallback((message) => {
@@ -365,6 +236,7 @@ export function ClipboardInterface() {
                     key={block.id}
                     block={block}
                     sessionId={sessionData.connection_id}
+                    userId={sessionData.user_id}
                     onDelete={handleDeleteBlock}
                 />))}
 

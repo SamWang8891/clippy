@@ -1,24 +1,33 @@
 import asyncio
 import json
+import logging
 import os
 import random
+import shutil
 import string
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Literal
 
 import aiofiles
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Load environment variables
 load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("clippy")
 
 # Configuration from environment
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -34,14 +43,63 @@ CONNECTION_ID_LENGTH = int(os.getenv("CONNECTION_ID_LENGTH", "6"))
 # Grace period before a disconnected user is removed from the session, allowing
 # brief network blips and page refreshes to reconnect without churn.
 DISCONNECT_GRACE_SECONDS = int(os.getenv("DISCONNECT_GRACE_SECONDS", "10"))
+# Per-session caps to prevent a single user from filling memory or disk.
+MAX_BLOCKS_PER_SESSION = int(os.getenv("MAX_BLOCKS_PER_SESSION", "200"))
+MAX_TEXT_BLOCK_LENGTH = int(os.getenv("MAX_TEXT_BLOCK_LENGTH", "1048576"))  # 1 MiB ciphertext
+MAX_SESSION_BYTES_GIB = float(os.getenv("MAX_SESSION_BYTES_GIB", "5"))
+MAX_SESSION_BYTES = int(MAX_SESSION_BYTES_GIB * 1024 * 1024 * 1024)
 
 # Initialize FastAPI app
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Startup: restore persisted state, prune orphans, launch background tasks.
+
+    Shutdown: flush state so the next process starts where we left off.
+    """
+    load_sessions_sync()
+
+    if UPLOAD_DIR.exists():
+        valid_session_ids = set(sessions.keys())
+        for item in UPLOAD_DIR.iterdir():
+            if item.is_dir():
+                if item.name not in valid_session_ids:
+                    shutil.rmtree(item, ignore_errors=True)
+            elif item.name != ".gitkeep":
+                try:
+                    item.unlink()
+                except OSError:
+                    pass
+        logger.info(
+            "Startup: restored %d session(s); pruned orphan entries in %s",
+            len(sessions), UPLOAD_DIR,
+        )
+
+    cleanup_task = asyncio.create_task(cleanup_expired_sessions())
+    persistence_task = asyncio.create_task(persistence_loop())
+
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        persistence_task.cancel()
+        for task in (cleanup_task, persistence_task):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        try:
+            await save_sessions()
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to flush sessions on shutdown: %s", e)
+
+
 app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
-    version="1.2.3",
+    version="1.3.0",
     openapi_url="/api/v1/openapi.json",
     docs_url="/api/v1/docs",
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -53,13 +111,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Constants
-UPLOAD_DIR = Path("uploads")
-MAX_FILE_SIZE = int(MAX_FILE_SIZE_GIB * 1024 * 1024 * 1024)  # Convert GiB to bytes
-SESSION_TIMEOUT = timedelta(seconds=SESSION_TIMEOUT_SECONDS)
-
-# Ensure upload directory exists
+# Storage layout: keep persistent state separate from per-session uploads so the
+# state file can never collide with a session id and so it's easy to back up.
+DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
+DATA_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+SESSIONS_FILE = DATA_DIR / "sessions.json"
+MAX_FILE_SIZE = int(MAX_FILE_SIZE_GIB * 1024 * 1024 * 1024)
+SESSION_TIMEOUT = timedelta(seconds=SESSION_TIMEOUT_SECONDS)
 
 
 # Pydantic models
@@ -69,55 +129,58 @@ class User(BaseModel):
     is_host: bool
 
 
+BlockType = Literal["text", "file"]
+
+
 class Block(BaseModel):
     id: str
-    type: str  # "text" or "file"
-    content: Optional[str] = None
-    filename: Optional[str] = None  # Server filename
-    original_filename: Optional[str] = None  # Original uploaded filename
+    type: BlockType
+    content: str | None = None
+    filename: str | None = None
+    original_filename: str | None = None
     created_by: str
     created_at: str
 
 
 class SessionInfo(BaseModel):
     connection_id: str
-    users: List[User]
-    blocks: List[Block]
+    users: list[User]
+    blocks: list[Block]
     allow_join: bool
     host_id: str
 
 
 class CreateSessionRequest(BaseModel):
-    user_name: Optional[str] = None
+    user_name: str | None = Field(default=None, max_length=64)
 
 
 class JoinSessionRequest(BaseModel):
-    connection_id: str
-    user_name: Optional[str] = None
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_name: str | None = Field(default=None, max_length=64)
 
 
 class CreateBlockRequest(BaseModel):
-    connection_id: str
-    user_id: str
-    type: str
-    content: Optional[str] = None
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    type: BlockType
+    content: str | None = Field(default=None, max_length=MAX_TEXT_BLOCK_LENGTH)
 
 
 class DeleteBlockRequest(BaseModel):
-    connection_id: str
-    user_id: str
-    block_id: str
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
 
 
 class TransferHostRequest(BaseModel):
-    connection_id: str
-    current_host_id: str
-    new_host_id: str
+    connection_id: str = Field(min_length=1, max_length=64)
+    current_host_id: str = Field(min_length=1, max_length=64)
+    new_host_id: str = Field(min_length=1, max_length=64)
 
 
 class ToggleJoinRequest(BaseModel):
-    connection_id: str
-    user_id: str
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
     allow_join: bool
 
 
@@ -139,17 +202,30 @@ class Session:
     def __init__(self, connection_id: str, host_id: str, host_name: str):
         """Initialize a new session with a host user."""
         self.connection_id = connection_id
-        self.users: Dict[str, User] = {
+        self.users: dict[str, User] = {
             host_id: User(id=host_id, name=host_name, is_host=True)
         }
-        self.blocks: Dict[str, Block] = {}
+        self.blocks: dict[str, Block] = {}
+        self.block_bytes: dict[str, int] = {}  # block_id -> byte size on disk
+        self.total_bytes = 0
         self.allow_join = True
         self.last_activity = datetime.now()
-        self.websockets: Dict[str, WebSocket] = {}
+        self.websockets: dict[str, WebSocket] = {}
         # Pending eviction tasks keyed by user_id so reconnects can cancel them.
-        self.pending_disconnects: Dict[str, asyncio.Task] = {}
+        self.pending_disconnects: dict[str, asyncio.Task] = {}
         self.session_dir = UPLOAD_DIR / connection_id
         self.session_dir.mkdir(exist_ok=True)
+
+    def has_member(self, user_id: str) -> bool:
+        return user_id in self.users
+
+    def quota_check(self, additional_bytes: int = 0) -> str | None:
+        """Return None if quota is OK, else a human-readable error reason."""
+        if len(self.blocks) >= MAX_BLOCKS_PER_SESSION:
+            return f"Block limit reached ({MAX_BLOCKS_PER_SESSION})"
+        if self.total_bytes + additional_bytes > MAX_SESSION_BYTES:
+            return f"Session storage quota exceeded ({MAX_SESSION_BYTES} bytes)"
+        return None
 
     def update_activity(self):
         """Update the last activity timestamp to prevent session timeout."""
@@ -200,16 +276,17 @@ class Session:
             user.is_host = (user.id == new_host_id)
         self.update_activity()
 
-    def add_block(self, block: Block):
-        """Add a new text or file block to the session."""
+    def add_block(self, block: Block, byte_size: int = 0):
+        """Add a new text or file block to the session and account for its size."""
         self.blocks[block.id] = block
+        self.block_bytes[block.id] = byte_size
+        self.total_bytes += byte_size
         self.update_activity()
 
     def delete_block(self, block_id: str):
         """Delete a block and its associated files from the session."""
         if block_id in self.blocks:
             block = self.blocks[block_id]
-            # Delete associated file
             if block.type == "file" and block.filename:
                 file_path = self.session_dir / block.filename
                 if file_path.exists():
@@ -219,9 +296,10 @@ class Session:
                 if text_file.exists():
                     text_file.unlink()
             del self.blocks[block_id]
+            self.total_bytes -= self.block_bytes.pop(block_id, 0)
         self.update_activity()
 
-    async def broadcast(self, message: dict, exclude_user: Optional[str] = None):
+    async def broadcast(self, message: dict, exclude_user: str | None = None):
         """
         Broadcast a message to all connected WebSocket clients.
 
@@ -234,7 +312,7 @@ class Session:
                 continue
             try:
                 await ws.send_json(message)
-            except Exception:
+            except Exception:  # noqa: BLE001 — broadcasts must keep going if one socket dies.
                 pass
 
     def to_dict(self) -> dict:
@@ -243,6 +321,7 @@ class Session:
             "connection_id": self.connection_id,
             "users": {uid: u.model_dump() for uid, u in self.users.items()},
             "blocks": {bid: b.model_dump() for bid, b in self.blocks.items()},
+            "block_bytes": self.block_bytes,
             "allow_join": self.allow_join,
             "last_activity": self.last_activity.isoformat(),
         }
@@ -253,6 +332,8 @@ class Session:
         instance.connection_id = data["connection_id"]
         instance.users = {uid: User(**u) for uid, u in data.get("users", {}).items()}
         instance.blocks = {bid: Block(**b) for bid, b in data.get("blocks", {}).items()}
+        instance.block_bytes = dict(data.get("block_bytes", {}))
+        instance.total_bytes = sum(instance.block_bytes.values())
         instance.allow_join = data.get("allow_join", True)
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
         instance.websockets = {}
@@ -263,11 +344,10 @@ class Session:
 
 
 # Global session storage - Maps connection_id to Session objects
-sessions: Dict[str, Session] = {}
+sessions: dict[str, Session] = {}
 
 # Persistence: snapshot session metadata to disk so a restart doesn't wipe state.
 # A dirty flag + periodic flush avoids touching the disk on every mutation.
-SESSIONS_FILE = UPLOAD_DIR / ".sessions.json"
 PERSIST_INTERVAL_SECONDS = 2
 _sessions_dirty = False
 
@@ -291,36 +371,38 @@ def load_sessions_sync() -> None:
     if not SESSIONS_FILE.exists():
         return
     try:
-        with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+        with open(SESSIONS_FILE, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(f"Failed to load sessions snapshot: {e}")
+        logger.error("Failed to load sessions snapshot: %s", e)
         return
 
     for sid, sdata in data.items():
         try:
             sessions[sid] = Session.from_dict(sdata)
-        except Exception as e:
-            print(f"Skipping malformed session {sid}: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Skipping malformed session %s: %s", sid, e)
 
 
 async def persistence_loop() -> None:
     """Background task that flushes the dirty flag at a fixed interval."""
     global _sessions_dirty
     while True:
-        await asyncio.sleep(PERSIST_INTERVAL_SECONDS)
+        try:
+            await asyncio.sleep(PERSIST_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            return
         if not _sessions_dirty:
             continue
         _sessions_dirty = False
         try:
             await save_sessions()
-        except Exception as e:
-            # Re-arm the dirty flag so we retry on the next tick.
+        except Exception as e:  # noqa: BLE001
             _sessions_dirty = True
-            print(f"Failed to persist sessions: {e}")
+            logger.error("Failed to persist sessions: %s", e)
 
 
-def api_response(status: HTTPStatus, message: str, data: Optional[dict] = None) -> JSONResponse:
+def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> JSONResponse:
     """
     Create a standardized API response with HTTP status code.
 
@@ -343,52 +425,43 @@ def api_response(status: HTTPStatus, message: str, data: Optional[dict] = None) 
 
 def generate_connection_id() -> str | None:
     """
-    Generate a unique 6-character session ID using lowercase letters and digits.
+    Generate a unique connection ID using lowercase letters and digits.
 
-    Returns a session ID that doesn't exist in the current sessions dictionary,
-    or None if all possible IDs are exhausted.
+    Returns None only when the keyspace is genuinely exhausted; otherwise the
+    capped attempt loop will find a free ID with overwhelming probability long
+    before the cap is hit.
     """
     chars = string.ascii_lowercase + string.digits
     max_possible = len(chars) ** CONNECTION_ID_LENGTH
-    max_attempts = min(max_possible, 1000)  # Limit attempts to avoid infinite loops
 
-    for _ in range(max_attempts):
-        connection_id = ''.join(random.choices(chars, k=CONNECTION_ID_LENGTH))
-        if connection_id not in sessions:
-            return connection_id
-
-    # If random generation failed, check if we're actually at capacity
     if len(sessions) >= max_possible:
         return None
 
-    # Fallback: try a few more times
-    for _ in range(100):
-        connection_id = ''.join(random.choices(chars, k=CONNECTION_ID_LENGTH))
-        if connection_id not in sessions:
-            return connection_id
+    for _ in range(min(max_possible, 1000)):
+        candidate = "".join(random.choices(chars, k=CONNECTION_ID_LENGTH))
+        if candidate not in sessions:
+            return candidate
 
     return None
 
 
-def generate_random_name() -> str:
-    """
-    Generate a random user name by combining an adjective and animal.
+_NAME_ADJECTIVES = (
+    "Happy", "Clever", "Swift", "Bright", "Cool", "Smart", "Quick", "Calm", "Bold", "Wise",
+    "Brave", "Gentle", "Lively", "Witty", "Agile", "Keen", "Noble", "Proud", "Merry", "Jolly",
+    "Fierce", "Loyal", "Mighty", "Lucky", "Sunny", "Silent", "Golden", "Silver", "Crystal", "Cosmic",
+    "Mystic", "Shadow", "Radiant", "Wild", "Chill", "Vivid", "Daring", "Curious", "Sneaky", "Fluffy",
+)
+_NAME_NOUNS = (
+    "Panda", "Tiger", "Eagle", "Dolphin", "Fox", "Wolf", "Bear", "Hawk", "Lion", "Owl",
+    "Falcon", "Otter", "Raven", "Phoenix", "Dragon", "Panther", "Koala", "Penguin", "Rabbit", "Deer",
+    "Lynx", "Jaguar", "Cheetah", "Whale", "Shark", "Cobra", "Turtle", "Crane", "Swan", "Parrot",
+    "Husky", "Corgi", "Gecko", "Lemur", "Badger", "Beaver", "Moose", "Elk", "Bison", "Raccoon",
+)
 
-    Examples: "HappyPanda", "CleverFox", "SwiftEagle"
-    """
-    adjectives = [
-        "Happy", "Clever", "Swift", "Bright", "Cool", "Smart", "Quick", "Calm", "Bold", "Wise",
-        "Brave", "Gentle", "Lively", "Witty", "Agile", "Keen", "Noble", "Proud", "Merry", "Jolly",
-        "Fierce", "Loyal", "Mighty", "Lucky", "Sunny", "Silent", "Golden", "Silver", "Crystal", "Cosmic",
-        "Mystic", "Shadow", "Radiant", "Wild", "Chill", "Vivid", "Daring", "Curious", "Sneaky", "Fluffy"
-    ]
-    nouns = [
-        "Panda", "Tiger", "Eagle", "Dolphin", "Fox", "Wolf", "Bear", "Hawk", "Lion", "Owl",
-        "Falcon", "Otter", "Raven", "Phoenix", "Dragon", "Panther", "Koala", "Penguin", "Rabbit", "Deer",
-        "Lynx", "Jaguar", "Cheetah", "Whale", "Shark", "Cobra", "Turtle", "Crane", "Swan", "Parrot",
-        "Husky", "Corgi", "Gecko", "Lemur", "Badger", "Beaver", "Moose", "Elk", "Bison", "Raccoon"
-    ]
-    return f"{random.choice(adjectives)}{random.choice(nouns)}"
+
+def generate_random_name() -> str:
+    """Generate a random user name like ``HappyPanda`` or ``CleverFox``."""
+    return f"{random.choice(_NAME_ADJECTIVES)}{random.choice(_NAME_NOUNS)}"
 
 
 async def _teardown_session(connection_id: str, reason: str):
@@ -407,66 +480,26 @@ async def _teardown_session(connection_id: str, reason: str):
     for ws in list(session.websockets.values()):
         try:
             await ws.close()
-        except Exception:
+        except Exception:  # noqa: BLE001 — WebSocket may already be closed; nothing actionable.
             pass
     session.websockets.clear()
 
     if session.session_dir.exists():
-        import shutil
         shutil.rmtree(session.session_dir, ignore_errors=True)
 
     mark_sessions_dirty()
 
 
 async def cleanup_expired_sessions():
-    """
-    Background task that periodically checks for and removes expired sessions.
-
-    Runs every 60 seconds, checking for sessions that haven't had activity
-    in the configured timeout period (default 1 hour). Notifies users,
-    closes WebSockets, deletes files, and removes sessions from memory.
-    """
+    """Periodically reap sessions that have exceeded the inactivity timeout."""
     while True:
-        await asyncio.sleep(60)
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            return
         expired = [sid for sid, session in sessions.items() if session.is_expired()]
         for sid in expired:
             await _teardown_session(sid, "timeout")
-
-
-# API Endpoints
-@app.on_event("startup")
-async def startup_event():
-    # Restore sessions from the previous process (if any) before pruning state.
-    load_sessions_sync()
-
-    import shutil
-    if UPLOAD_DIR.exists():
-        valid_session_ids = set(sessions.keys())
-        preserved = {SESSIONS_FILE.name, SESSIONS_FILE.with_suffix(".tmp").name, ".gitkeep"}
-        for item in UPLOAD_DIR.iterdir():
-            if item.is_dir():
-                if item.name not in valid_session_ids:
-                    shutil.rmtree(item, ignore_errors=True)
-            elif item.name not in preserved:
-                try:
-                    item.unlink()
-                except OSError:
-                    pass
-        print(
-            f"Startup: restored {len(sessions)} session(s); pruned orphan entries in {UPLOAD_DIR}"
-        )
-
-    asyncio.create_task(cleanup_expired_sessions())
-    asyncio.create_task(persistence_loop())
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Flush any pending session changes so a clean restart restores everything."""
-    try:
-        await save_sessions()
-    except Exception as e:
-        print(f"Failed to flush sessions on shutdown: {e}")
 
 
 @app.get(
@@ -609,35 +642,31 @@ async def join_session(request: JoinSessionRequest):
     summary="Get Session Details",
     description="Retrieve complete session information including users and blocks"
 )
-async def get_session(connection_id: str):
+async def get_session(connection_id: str, user_id: str):
     """
-    Get detailed information about a session.
-
-    Returns all users in the session, all blocks (text and files),
-    join permission status, and the current host ID.
+    Get detailed information about a session. The caller must be a member.
     """
     connection_id = connection_id.lower()
 
     if connection_id not in sessions:
-        return api_response(
-            HTTPStatus.NOT_FOUND,
-            "Session not found"
-        )
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
+    if not session.has_member(user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     session_info = SessionInfo(
         connection_id=connection_id,
         users=list(session.users.values()),
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
-        host_id=next((u.id for u in session.users.values() if u.is_host), "")
+        host_id=next((u.id for u in session.users.values() if u.is_host), ""),
     )
 
     return api_response(
         HTTPStatus.OK,
         "Session retrieved",
-        session_info.model_dump()
+        session_info.model_dump(),
     )
 
 
@@ -794,37 +823,33 @@ async def create_text_block(request: CreateBlockRequest):
     connection_id = request.connection_id.lower()
 
     if connection_id not in sessions:
-        return api_response(
-            HTTPStatus.NOT_FOUND,
-            "Session not found"
-        )
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
 
-    if request.user_id not in session.users:
-        return api_response(
-            HTTPStatus.FORBIDDEN,
-            "User not in session"
-        )
+    if not session.has_member(request.user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    content_bytes = len(request.content.encode("utf-8")) if request.content else 0
+    quota_error = session.quota_check(content_bytes)
+    if quota_error is not None:
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, quota_error)
 
     block_id = str(uuid.uuid4())
-
-    # Create block
     block = Block(
         id=block_id,
         type=request.type,
         content=request.content,
         created_by=request.user_id,
-        created_at=datetime.now().isoformat()
+        created_at=datetime.now().isoformat(),
     )
 
-    # Save text to file if it's a text block
     if request.type == "text" and request.content:
         text_file = session.session_dir / f"text_block_{block_id}.txt"
         async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
             await f.write(request.content)
 
-    session.add_block(block)
+    session.add_block(block, byte_size=content_bytes)
 
     # Broadcast new block
     await session.broadcast({
@@ -845,9 +870,9 @@ async def create_text_block(request: CreateBlockRequest):
     description="Upload a file to the session (encrypted)"
 )
 async def upload_file_block(
-        connection_id: str = Form(...),
-        user_id: str = Form(...),
-        file: UploadFile = File(...)
+        connection_id: str = Form(...),  # noqa: B008 — FastAPI dependency markers.
+        user_id: str = Form(...),  # noqa: B008
+        file: UploadFile = File(...),  # noqa: B008
 ):
     """
     Upload a file to the session.
@@ -859,18 +884,16 @@ async def upload_file_block(
     connection_id = connection_id.lower()
 
     if connection_id not in sessions:
-        return api_response(
-            HTTPStatus.NOT_FOUND,
-            "Session not found"
-        )
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
 
-    if user_id not in session.users:
-        return api_response(
-            HTTPStatus.FORBIDDEN,
-            "User not in session"
-        )
+    if not session.has_member(user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    quota_error = session.quota_check(0)
+    if quota_error is not None:
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, quota_error)
 
     block_id = str(uuid.uuid4())
 
@@ -881,9 +904,13 @@ async def upload_file_block(
     safe_filename = f"file_{block_id}{safe_suffix}"
     file_path = session.session_dir / safe_filename
 
-    # Stream the upload to disk in chunks so a 1 GiB file doesn't sit in memory.
+    # Per-request hard cap; also re-check the per-session quota mid-stream so a
+    # single huge upload can't exceed the session bytes budget.
+    per_session_remaining = MAX_SESSION_BYTES - session.total_bytes
+    effective_cap = min(MAX_FILE_SIZE, per_session_remaining)
     chunk_size = 1024 * 1024
     bytes_written = 0
+    overflow = False
     try:
         async with aiofiles.open(file_path, "wb") as f:
             while True:
@@ -891,7 +918,8 @@ async def upload_file_block(
                 if not chunk:
                     break
                 bytes_written += len(chunk)
-                if bytes_written > MAX_FILE_SIZE:
+                if bytes_written > effective_cap:
+                    overflow = True
                     break
                 await f.write(chunk)
     except Exception:
@@ -899,25 +927,26 @@ async def upload_file_block(
             file_path.unlink()
         raise
 
-    if bytes_written > MAX_FILE_SIZE:
+    if overflow:
         if file_path.exists():
             file_path.unlink()
-        return api_response(
-            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+        message = (
             f"File too large. Max size: {MAX_FILE_SIZE} bytes"
+            if bytes_written > MAX_FILE_SIZE
+            else "Session storage quota exceeded"
         )
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
 
-    # Create block with both server filename and original filename
     block = Block(
         id=block_id,
         type="file",
         filename=safe_filename,
-        original_filename=file.filename,  # Store original name
+        original_filename=file.filename,
         created_by=user_id,
-        created_at=datetime.now().isoformat()
+        created_at=datetime.now().isoformat(),
     )
 
-    session.add_block(block)
+    session.add_block(block, byte_size=bytes_written)
 
     # Broadcast new block
     await session.broadcast({
@@ -986,54 +1015,52 @@ async def delete_block(request: DeleteBlockRequest):
     summary="Download Block",
     description="Download a text or file block (encrypted)"
 )
-async def download_block(connection_id: str, block_id: str):
+async def download_block(connection_id: str, block_id: str, user_id: str):
     """
-    Download a block's content.
+    Stream a block's encrypted content. The caller must be a session member.
 
-    Returns the encrypted file or text content. Client is responsible
-    for decryption using the shared encryption keys.
+    The response uses ``application/octet-stream`` so browsers don't try to
+    sniff or render what is actually opaque ciphertext.
     """
     connection_id = connection_id.lower()
 
     if connection_id not in sessions:
-        return api_response(
-            HTTPStatus.NOT_FOUND,
-            "Session not found"
-        )
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
 
-    if block_id not in session.blocks:
-        return api_response(
-            HTTPStatus.NOT_FOUND,
-            "Block not found"
-        )
+    if not session.has_member(user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
-    block = session.blocks[block_id]
+    block = session.blocks.get(block_id)
+    if block is None:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
-    if block.type == "file":
+    headers = {"Cache-Control": "no-store"}
+
+    if block.type == "file" and block.filename:
         file_path = session.session_dir / block.filename
         if not file_path.exists():
-            return api_response(
-                HTTPStatus.NOT_FOUND,
-                "File not found"
-            )
-        # Use original filename for download if available, otherwise use server filename
-        download_filename = block.original_filename if block.original_filename else block.filename
-        return FileResponse(file_path, filename=download_filename)
-    elif block.type == "text":
+            return api_response(HTTPStatus.NOT_FOUND, "File not found")
+        download_filename = block.original_filename or block.filename
+        return FileResponse(
+            file_path,
+            filename=download_filename,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+    if block.type == "text":
         text_file = session.session_dir / f"text_block_{block_id}.txt"
         if not text_file.exists():
-            return api_response(
-                HTTPStatus.NOT_FOUND,
-                "Text file not found"
-            )
-        return FileResponse(text_file, filename=f"text_{block_id}.txt")
+            return api_response(HTTPStatus.NOT_FOUND, "Text file not found")
+        return FileResponse(
+            text_file,
+            filename=f"text_{block_id}.txt",
+            media_type="application/octet-stream",
+            headers=headers,
+        )
 
-    return api_response(
-        HTTPStatus.BAD_REQUEST,
-        "Invalid block type"
-    )
+    return api_response(HTTPStatus.BAD_REQUEST, "Invalid block type")
 
 
 async def _remove_user_after_grace(connection_id: str, user_id: str):
@@ -1105,8 +1132,8 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: 
                 session.update_activity()
     except WebSocketDisconnect:
         pass
-    except Exception as e:
-        print(f"WebSocket error: {e}")
+    except Exception as e:  # noqa: BLE001 — log and clean up regardless of cause.
+        logger.warning("WebSocket error: %s", e)
     finally:
         # Only drop the websocket reference if it still points at this connection.
         # A reconnect may have already replaced it during the disconnect handling.

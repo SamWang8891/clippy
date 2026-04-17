@@ -1,26 +1,32 @@
 import React, {useEffect, useState} from 'react';
 import {useToast} from '../context/ToastContext';
-import {decrypt} from '../utils/encryption';
+import {decrypt, decryptToBytes} from '../utils/encryption';
 import {getDownloadUrl} from '../utils/api';
 import './BlockItem.css';
 
-export function BlockItem({block, sessionId, onDelete}) {
+export function BlockItem({block, sessionId, userId, onDelete}) {
     const [decryptedContent, setDecryptedContent] = useState('');
     const [isDecrypting, setIsDecrypting] = useState(false);
     const toast = useToast();
 
     useEffect(() => {
-        if (block.type === 'text' && block.content) {
-            setIsDecrypting(true);
-            try {
-                const decrypted = decrypt(block.content);
-                setDecryptedContent(decrypted);
-            } catch (err) {
-                setDecryptedContent('Failed to decrypt content');
-            } finally {
-                setIsDecrypting(false);
-            }
-        }
+        if (block.type !== 'text' || !block.content) return undefined;
+        let cancelled = false;
+        setIsDecrypting(true);
+        decrypt(block.content)
+            .then((plaintext) => {
+                if (!cancelled) setDecryptedContent(plaintext);
+            })
+            .catch((err) => {
+                console.error('Decrypt failed:', err);
+                if (!cancelled) setDecryptedContent('Failed to decrypt content');
+            })
+            .finally(() => {
+                if (!cancelled) setIsDecrypting(false);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [block]);
 
     const handleCopy = () => {
@@ -30,22 +36,14 @@ export function BlockItem({block, sessionId, onDelete}) {
 
     const handleDownload = async () => {
         try {
-            // Fetch the encrypted file
-            const response = await fetch(getDownloadUrl(sessionId, block.id));
-            const encryptedData = await response.text();
-
-            // Decrypt the base64 data
-            const decryptedBase64 = decrypt(encryptedData);
-
-            // Convert base64 back to binary
-            const binaryString = atob(decryptedBase64);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+            const response = await fetch(getDownloadUrl(sessionId, block.id, userId));
+            if (!response.ok) {
+                throw new Error(`Download failed (HTTP ${response.status})`);
             }
+            const encryptedData = await response.text();
+            const bytes = await decryptToBytes(encryptedData);
 
-            // Create blob and trigger download
-            const blob = new Blob([bytes]);
+            const blob = new Blob([bytes], {type: 'application/octet-stream'});
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;

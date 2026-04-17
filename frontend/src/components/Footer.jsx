@@ -4,7 +4,7 @@ import './Footer.css';
 export function Footer() {
     return (
         <footer className="footer-container">
-            <p className="footer-version">v1.2.3</p>
+            <p className="footer-version">v1.3.0</p>
             <a
                 className="footer-github"
                 href="https://github.com/SamWang8891/clippy"

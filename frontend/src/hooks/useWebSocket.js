@@ -1,6 +1,9 @@
 import {useEffect, useRef, useState} from 'react';
 import {getBackendUrl} from '../utils/config';
 
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+
 export function useWebSocket(sessionId, userId, onMessage) {
     const [isConnected, setIsConnected] = useState(false);
     const wsRef = useRef(null);
@@ -17,18 +20,29 @@ export function useWebSocket(sessionId, userId, onMessage) {
         if (!sessionId || !userId) return;
 
         let cancelled = false;
+        let attempt = 0;
+
+        const scheduleReconnect = () => {
+            if (cancelled) return;
+            // Exponential backoff with full jitter, capped at RECONNECT_MAX_MS.
+            const cap = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** attempt);
+            attempt += 1;
+            const delay = Math.floor(Math.random() * cap);
+            reconnectTimeoutRef.current = setTimeout(connect, delay);
+        };
 
         const connect = () => {
             if (cancelled) return;
 
             const apiUrl = getBackendUrl();
-            const wsUrl = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
+            const wsUrl = apiUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
             const fullWsUrl = `${wsUrl}/ws/${sessionId}/${userId}`;
 
             console.log('Connecting to WebSocket:', fullWsUrl);
             wsRef.current = new WebSocket(fullWsUrl);
 
             wsRef.current.onopen = () => {
+                attempt = 0;
                 setIsConnected(true);
 
                 pingIntervalRef.current = setInterval(() => {
@@ -57,10 +71,7 @@ export function useWebSocket(sessionId, userId, onMessage) {
                     clearInterval(pingIntervalRef.current);
                     pingIntervalRef.current = null;
                 }
-
-                if (!cancelled) {
-                    reconnectTimeoutRef.current = setTimeout(connect, 3000);
-                }
+                scheduleReconnect();
             };
 
             wsRef.current.onerror = () => {

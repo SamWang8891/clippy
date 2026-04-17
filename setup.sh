@@ -1,8 +1,9 @@
 #!/bin/bash
+set -euo pipefail
 
 # Check current directory
 if [ ! -f "docker/frontend/index.html" ] || [ ! -f "docker/backend/app.py" ]; then
-    echo "Required files not in docker/, please do download the release.zip from GitHub release page or build it yourself."
+    echo "Required files not in docker/, please download the release.zip from the GitHub release page or build it yourself."
     echo "Please refer to README.md for more info."
     exit 1
 fi
@@ -23,10 +24,10 @@ if [ "$(docker ps -aq -f name=clippy)" ]; then
     read -r -p "There is an existing one, do you want to reinstall and reconfigure it? (yes/no): " confirm
     if [ "$confirm" == "yes" ]; then
         echo -e "\nStopping, please wait patiently..."
-        docker stop clippy-nginx
-        docker stop clippy-python
-        docker rm clippy-nginx
-        docker rm clippy-python
+        docker stop clippy-nginx || true
+        docker stop clippy-python || true
+        docker rm clippy-nginx || true
+        docker rm clippy-python || true
     else
         echo -e "Exiting...\n"
         exit 1
@@ -43,15 +44,6 @@ then
 fi
 
 
-# Check if openssl is installed
-if ! command -v openssl &> /dev/null
-then
-    echo -e "\nOpenSSL not found on your system."
-    echo "Please install docker compose."
-    exit 1
-fi
-
-
 # Get base URL from user
 echo -e "\nPlease enter the base URL for your Clippy installation."
 echo -e "This should include the protocol (http:// or https://) and port number if not using standard ports (80/443)."
@@ -62,8 +54,12 @@ read -r -p "Please enter base URL: " baseurl
 # Update ALLOWED_ORIGINS in docker/backend/.env
 sed -i.bak "s|ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=${baseurl}|g" docker/backend/.env
 
-# Update backend URL in docker/frontend/config.yaml
-sed -i.bak "s|url: \".*\"|url: \"${baseurl}\"|g" docker/frontend/config.yaml
+# Write the backend URL into the frontend's runtime config (JSON, not YAML).
+cat > docker/frontend/config.json <<EOF
+{
+  "url": "${baseurl}"
+}
+EOF
 
 
 # Get maximum file upload size from user
@@ -79,31 +75,21 @@ sed -i.bak "s|MAX_UPLOAD_SIZE_GIB=.*|MAX_UPLOAD_SIZE_GIB=${maxfilesize}|g" docke
 # Get the connection id length from user
 echo -e "\nPlease enter the connection ID length."
 echo -e "Note: User will NOT be able to create new connection when all id is taken at the moment."
-echo -e "Recommented: 4-6\n"
+echo -e "Recommended: 4-6\n"
 read -r -p "Please enter the connection ID length: " idlength
 
 # Update CONNECTION_ID_LENGTH in docker/backend/.env
 sed -i.bak "s|CONNECTION_ID_LENGTH=.*|CONNECTION_ID_LENGTH=${idlength}|g" docker/backend/.env
 
 
-# Generate secure encryption keys
-echo -e "\nGenerating secure encryption keys..."
+# Encryption keys are generated client-side per session and shared via the URL
+# fragment, so the server holds no encryption secret and none is configured here.
 
-# Generate random encryption passphrase (64 bytes, base64 encoded)
-ENCRYPTION_PASSPHRASE=$(openssl rand -base64 64 | tr -d '\n')
-echo "Encryption passphrase generated: ${ENCRYPTION_PASSPHRASE:0:20}... (truncated for display)"
+rm -f docker/backend/.env.bak
 
-# Generate random encryption salt (32 bytes, base64 encoded)
-ENCRYPTION_SALT=$(openssl rand -base64 32 | tr -d '\n')
-echo "Encryption salt generated: ${ENCRYPTION_SALT:0:20}... (truncated for display)"
-
-# Update encryption keys in docker/backend/.env
-sed -i.bak "s|ENCRYPTION_PASSPHRASE=.*|ENCRYPTION_PASSPHRASE=${ENCRYPTION_PASSPHRASE}|g" docker/backend/.env
-sed -i.bak "s|ENCRYPTION_SALT=.*|ENCRYPTION_SALT=${ENCRYPTION_SALT}|g" docker/backend/.env
-
-
-# Set permission
-chmod -R 777 docker
+# Set restrictive permissions: the .env file may contain origin / size / id config.
+chmod 750 docker docker/backend docker/frontend docker/nginx 2>/dev/null || true
+find docker -type f -exec chmod 640 {} +
 
 
 # Docker compose up
