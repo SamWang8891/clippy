@@ -45,27 +45,27 @@ Light (`:root`):
 - `--focus`: `#0a0a0a`
 - `--shadow`: `0 1px 2px rgba(10,10,10,0.04), 0 4px 12px rgba(10,10,10,0.04)`
 
-Dark (`[data-theme="dark"]`):
-- `--bg`: `#0a0a0a`
-- `--bg-elev`: `#141414`
-- `--fg`: `#e5e5e5`
-- `--fg-muted`: `#a3a3a3`
-- `--fg-subtle`: `#737373`
-- `--border`: `#1f1f1f`
-- `--border-strong`: `#262626`
+Dark (`[data-theme="dark"]`) — deliberately lighter than a pure-black theme. A near-black screen reflects the physical room behind the user and makes content hard to read; this palette sits in gray territory (zinc-900 through zinc-600) for comfort in normal lighting.
+- `--bg`: `#1c1c1f`
+- `--bg-elev`: `#26262a`
+- `--fg`: `#f4f4f5`
+- `--fg-muted`: `#a1a1aa`
+- `--fg-subtle`: `#71717a`
+- `--border`: `#3f3f46`
+- `--border-strong`: `#52525b`
 - `--accent-live`: `#22c55e`
-- `--accent-live-off`: `#525252`
+- `--accent-live-off`: `#52525b`
 - `--danger`: `#f87171`
-- `--danger-bg`: `#2a1414`
-- `--focus`: `#e5e5e5`
-- `--shadow`: `0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3)`
+- `--danger-bg`: `#2a1717`
+- `--focus`: `#f4f4f5`
+- `--shadow`: `0 1px 2px rgba(0,0,0,0.45), 0 6px 16px rgba(0,0,0,0.35)`
 
 Primary button uses `background: var(--fg)` and `color: var(--bg)`, so it inverts naturally in each mode (dark button on light bg in light mode; light button on dark bg in dark mode). Hover reduces opacity to 0.88 — no color shifts.
 
 ### Spacing & rhythm
 
-- Base unit 4px. Scale: 4, 8, 12, 16, 20, 24, 32, 48, 64.
-- Container max-width: 480px desktop, 420px tablet, 100% mobile with 16px side padding.
+- Base unit 4px. Scale: 4, 8, 12, 16, 20, 24, 32, 48, 64, 96.
+- Container width is fluid and grows with the viewport — not a narrow reading column. Use `width: min(100% - 2 * var(--gutter), var(--max-w))` where `--gutter` and `--max-w` scale per breakpoint (see Responsive strategy).
 - Cards: `border: 1px solid var(--border)`, `border-radius: 8px`, `background: var(--bg-elev)`.
 - Dividers: single 1px solid `var(--border)`. No dotted rules, no noise textures, no radial gradients.
 
@@ -84,11 +84,18 @@ Primary button uses `background: var(--fg)` and `color: var(--bg)`, so it invert
 
 ## Responsive strategy
 
-Mobile-first CSS. Three breakpoints driven by `min-width` media queries.
+Mobile-first CSS. Four breakpoints driven by `min-width` media queries. The container grows with the viewport rather than capping at a narrow reading column — the user explicitly wants the UI to extend toward the screen edges on large displays.
 
-- `< 640px` — mobile. Column is full-width minus 16px padding. Header title and meta (live/kebab) share row 1; user name and ID strip drop to row 2. Button labels stay terse ("Create", "Join", "Save", "Copy").
-- `640–1023px` — tablet. Column = 420px centered. Header meta returns inline. Button labels can expand ("Create connection", "Join connection").
-- `≥ 1024px` — desktop. Column = 480px centered. Same layout as tablet with roomier vertical rhythm.
+| Breakpoint | `--gutter` | `--max-w` | Notes |
+|---|---|---|---|
+| `< 640px` mobile | 16px | none (100%) | Header meta stacks to row 2. Button labels terse ("Create", "Join", "Save"). |
+| `640–1023px` tablet | 24px | 720px | Header meta inline. Button labels full ("Create connection"). |
+| `1024–1439px` desktop | 48px | 1040px | Roomier vertical rhythm (24px between sections). |
+| `≥ 1440px` large | 64px | 1280px | Same as desktop, wider container, no two-column split. |
+
+The **landing page** (session entry) stays centered in a narrow form (max 440px) inside the outer container — a single form field does not benefit from extra width — but the outer page chrome scales with the breakpoint.
+
+The **main page** uses the full `--max-w` at every breakpoint: header stretches edge-to-edge within the gutter, the item list uses the full width, composer uses the full width. This is where "stop being cramped in the center" applies.
 
 Touch targets ≥ 36px on mobile. Inputs use `font-size: 16px` on mobile to suppress iOS zoom.
 

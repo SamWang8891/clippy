@@ -172,6 +172,13 @@ class DeleteBlockRequest(BaseModel):
     block_id: str = Field(min_length=1, max_length=64)
 
 
+class UpdateTextBlockRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
+    content: str = Field(max_length=MAX_TEXT_BLOCK_LENGTH)
+
+
 class TransferHostRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     current_host_id: str = Field(min_length=1, max_length=64)
@@ -958,6 +965,168 @@ async def upload_file_block(
         HTTPStatus.OK,
         "File uploaded",
         {"block_id": block_id, "block": block.model_dump()}
+    )
+
+
+@app.patch(
+    "/api/v1/block/update",
+    summary="Update Text Block",
+    description="Replace the content of an existing text block"
+)
+async def update_text_block(request: UpdateTextBlockRequest):
+    """
+    Update an existing text block's content in place.
+
+    Keeps the block's id and created_at, so the ledger order is preserved.
+    Content should be encrypted client-side before sending.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    if not session.has_member(request.user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    block = session.blocks.get(request.block_id)
+    if block is None:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+
+    if block.type != "text":
+        return api_response(HTTPStatus.BAD_REQUEST, "Block is not a text block")
+
+    new_bytes = len(request.content.encode("utf-8")) if request.content else 0
+    old_bytes = session.block_bytes.get(request.block_id, 0)
+    delta = new_bytes - old_bytes
+    if delta > 0:
+        quota_error = session.quota_check(delta)
+        if quota_error is not None:
+            return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, quota_error)
+
+    block.content = request.content
+    session.block_bytes[request.block_id] = new_bytes
+    session.total_bytes += delta
+
+    text_file = session.session_dir / f"text_block_{request.block_id}.txt"
+    async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
+        await f.write(request.content)
+
+    session.update_activity()
+
+    await session.broadcast({
+        "type": "block_updated",
+        "block": block.model_dump(),
+    })
+
+    return api_response(
+        HTTPStatus.OK,
+        "Block updated",
+        {"block": block.model_dump()},
+    )
+
+
+@app.post(
+    "/api/v1/block/replace",
+    summary="Replace File Block",
+    description="Upload a new file to replace the contents of an existing file block"
+)
+async def replace_file_block(
+        connection_id: str = Form(...),  # noqa: B008
+        user_id: str = Form(...),  # noqa: B008
+        block_id: str = Form(...),  # noqa: B008
+        file: UploadFile = File(...),  # noqa: B008
+):
+    """
+    Replace the file backing an existing file block.
+
+    Keeps the block's id and created_at so ledger order stays stable. The
+    incoming file is streamed with the same size-cap and session-quota
+    checks as the initial upload.
+    """
+    connection_id = connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    if not session.has_member(user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    block = session.blocks.get(block_id)
+    if block is None:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+
+    if block.type != "file":
+        return api_response(HTTPStatus.BAD_REQUEST, "Block is not a file block")
+
+    old_bytes = session.block_bytes.get(block_id, 0)
+    old_filename = block.filename
+
+    # Remaining quota excludes the old file's contribution, since we're replacing it.
+    per_session_remaining = MAX_SESSION_BYTES - (session.total_bytes - old_bytes)
+    effective_cap = min(MAX_FILE_SIZE, per_session_remaining)
+
+    raw_suffix = Path(file.filename or "").suffix
+    safe_suffix = "".join(c for c in raw_suffix if c.isalnum() or c in "._-")[:32]
+    safe_filename = f"file_{block_id}{safe_suffix}"
+    file_path = session.session_dir / safe_filename
+
+    # Write new file to a temp name first so a failure doesn't nuke the existing upload.
+    tmp_path = session.session_dir / f"{safe_filename}.new"
+    chunk_size = 1024 * 1024
+    bytes_written = 0
+    overflow = False
+    try:
+        async with aiofiles.open(tmp_path, "wb") as f:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > effective_cap:
+                    overflow = True
+                    break
+                await f.write(chunk)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+    if overflow:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        message = (
+            f"File too large. Max size: {MAX_FILE_SIZE} bytes"
+            if bytes_written > MAX_FILE_SIZE
+            else "Session storage quota exceeded"
+        )
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
+
+    if old_filename and old_filename != safe_filename:
+        old_path = session.session_dir / old_filename
+        if old_path.exists():
+            old_path.unlink()
+
+    os.replace(tmp_path, file_path)
+
+    block.filename = safe_filename
+    block.original_filename = file.filename
+    session.block_bytes[block_id] = bytes_written
+    session.total_bytes = session.total_bytes - old_bytes + bytes_written
+    session.update_activity()
+
+    await session.broadcast({
+        "type": "block_updated",
+        "block": block.model_dump(),
+    })
+
+    return api_response(
+        HTTPStatus.OK,
+        "File replaced",
+        {"block": block.model_dump()},
     )
 
 

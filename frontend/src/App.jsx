@@ -4,7 +4,6 @@ import {ToastProvider} from './context/ToastContext';
 import {ConfirmProvider} from './context/ConfirmContext';
 import {SessionEntry} from './components/SessionEntry';
 import {ClipboardInterface} from './components/ClipboardInterface';
-import {Footer} from './components/Footer';
 import {initConfig} from './utils/config';
 
 function AppContent() {
@@ -12,23 +11,18 @@ function AppContent() {
     const [isReady, setIsReady] = useState(false);
 
     useEffect(() => {
-        // Resolve the backend URL. Encryption keys are per-session and set
-        // when a session is created or joined, not at app startup.
         initConfig()
             .then(() => setIsReady(true))
             .catch((err) => {
                 console.error('Failed to initialize:', err);
-                setIsReady(true); // Still show UI with fallback config
+                setIsReady(true);
             });
     }, []);
 
     if (!isReady) {
         return (
             <div className="app-layout">
-                <div className="app-loading">
-                    Loading...
-                </div>
-                <Footer />
+                <div className="app-loading">Loading…</div>
             </div>
         );
     }
@@ -38,7 +32,6 @@ function AppContent() {
             <main className="app-main">
                 {sessionData ? <ClipboardInterface/> : <SessionEntry/>}
             </main>
-            <Footer />
         </div>
     );
 }

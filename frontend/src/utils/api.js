@@ -128,6 +128,39 @@ export async function uploadFileBlock(sessionId, userId, file) {
     return handleApiResponse(response);
 }
 
+export async function updateTextBlock(sessionId, userId, blockId, content) {
+    const encryptedContent = await encrypt(content);
+    const response = await fetch(`${getApiBase()}/block/update`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            block_id: blockId,
+            content: encryptedContent,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
+export async function replaceFileBlock(sessionId, userId, blockId, file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const encryptedBytes = await encrypt(new Uint8Array(arrayBuffer));
+
+    const formData = new FormData();
+    formData.append('connection_id', sessionId);
+    formData.append('user_id', userId);
+    formData.append('block_id', blockId);
+    const blob = new Blob([encryptedBytes], {type: 'application/octet-stream'});
+    formData.append('file', blob, file.name);
+
+    const response = await fetch(`${getApiBase()}/block/replace`, {
+        method: 'POST',
+        body: formData,
+    });
+    return handleApiResponse(response);
+}
+
 export async function deleteBlock(sessionId, userId, blockId) {
     const response = await fetch(`${getApiBase()}/block/delete`, {
         method: 'DELETE',

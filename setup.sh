@@ -61,6 +61,12 @@ cat > docker/frontend/config.json <<EOF
 }
 EOF
 
+# Get docker expose port from user
+echo -e "\nPlease enter the port number you want to expose the service on."
+read -r -p "Please enter port number: " exporse_port
+
+# Update .end
+sed -i.bak "s|WEB_PORT=.*|WEB_PORT=${exporse_port}|g" .env
 
 # Get maximum file upload size from user
 echo -e "\nPlease enter the maximum file upload size in GiB (Gibibytes)."
