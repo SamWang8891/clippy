@@ -143,6 +143,39 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 14px;
 }
 
+.app-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 16px;
+    font-size: 13px;
+    color: var(--fg-subtle);
+}
+
+.app-footer-version {
+    font-variant-numeric: tabular-nums;
+}
+
+.app-footer-repo {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg-muted);
+    text-decoration: none;
+    transition: color 120ms var(--ease);
+}
+
+.app-footer-repo:hover {
+    color: var(--fg);
+}
+
+.app-footer-icon {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+}
+
 ::-webkit-scrollbar {
     width: 8px;
     height: 8px;

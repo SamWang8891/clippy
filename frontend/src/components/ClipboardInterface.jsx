@@ -137,7 +137,19 @@ export function ClipboardInterface() {
         }
     }, [sessionData]);
 
-    const {isConnected} = useWebSocket(sessionData?.connection_id, sessionData?.user_id, handleWebSocketMessage);
+    const handleAuthRejected = useCallback(() => {
+        toast.error('Session no longer available — returning to home.');
+        clearSession();
+        window.history.replaceState({}, '', '/');
+        setTimeout(() => window.location.reload(), 1200);
+    }, [clearSession, toast]);
+
+    const {isConnected} = useWebSocket(
+        sessionData?.connection_id,
+        sessionData?.user_id,
+        handleWebSocketMessage,
+        handleAuthRejected,
+    );
 
     const showNotification = (text) => {
         setNotification(text);

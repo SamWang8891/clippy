@@ -52,7 +52,18 @@ echo -e "If using a reverse proxy, enter the public-facing URL.\n"
 read -r -p "Please enter base URL: " baseurl
 
 # Update ALLOWED_ORIGINS in docker/backend/.env
-sed -i.bak "s|ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=${baseurl}|g" docker/backend/.env
+# `sed -i` differs between BSD (macOS) and GNU (Linux); use a temp-file rewrite
+# so we don't leave .bak files behind on either platform.
+update_in_place() {
+    local file=$1
+    local expr=$2
+    local tmp
+    tmp=$(mktemp "${file}.XXXXXX")
+    sed "$expr" "$file" > "$tmp"
+    mv "$tmp" "$file"
+}
+
+update_in_place docker/backend/.env "s|ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=${baseurl}|g"
 
 # Write the backend URL into the frontend's runtime config (JSON, not YAML).
 cat > docker/frontend/config.json <<EOF
@@ -65,8 +76,8 @@ EOF
 echo -e "\nPlease enter the port number you want to expose the service on."
 read -r -p "Please enter port number: " exporse_port
 
-# Update .end
-sed -i.bak "s|WEB_PORT=.*|WEB_PORT=${exporse_port}|g" .env
+# Update .env
+update_in_place .env "s|WEB_PORT=.*|WEB_PORT=${exporse_port}|g"
 
 # Get maximum file upload size from user
 echo -e "\nPlease enter the maximum file upload size in GiB (Gibibytes)."
@@ -75,7 +86,7 @@ echo -e "1 GiB = 1024 MiB. Recommended: 1-5 GiB\n"
 read -r -p "Please enter max file size (GiB): " maxfilesize
 
 # Update MAX_UPLOAD_SIZE_GIB in docker/backend/.env
-sed -i.bak "s|MAX_UPLOAD_SIZE_GIB=.*|MAX_UPLOAD_SIZE_GIB=${maxfilesize}|g" docker/backend/.env
+update_in_place docker/backend/.env "s|MAX_UPLOAD_SIZE_GIB=.*|MAX_UPLOAD_SIZE_GIB=${maxfilesize}|g"
 
 
 # Get the connection id length from user
@@ -85,17 +96,23 @@ echo -e "Recommended: 4-6\n"
 read -r -p "Please enter the connection ID length: " idlength
 
 # Update CONNECTION_ID_LENGTH in docker/backend/.env
-sed -i.bak "s|CONNECTION_ID_LENGTH=.*|CONNECTION_ID_LENGTH=${idlength}|g" docker/backend/.env
+update_in_place docker/backend/.env "s|CONNECTION_ID_LENGTH=.*|CONNECTION_ID_LENGTH=${idlength}|g"
 
 
 # Encryption keys are generated client-side per session and shared via the URL
 # fragment, so the server holds no encryption secret and none is configured here.
 
-rm -f docker/backend/.env.bak
-
-# Set restrictive permissions: the .env file may contain origin / size / id config.
-chmod 750 docker docker/backend docker/frontend docker/nginx 2>/dev/null || true
-find docker -type f -exec chmod 640 {} +
+# Backend runs as root in-container, so 750/640 still lets it read/write while
+# blocking other host users from the .env. Nginx's worker runs as the non-root
+# `nginx` user on Linux bind mounts, so the frontend assets and nginx config
+# must be world-readable or the worker gets EACCES on index.html.
+find docker/backend -type d -exec chmod 750 {} +
+find docker/backend -type f -exec chmod 640 {} +
+chmod 600 docker/backend/.env
+find docker/frontend -type d -exec chmod 755 {} +
+find docker/frontend -type f -exec chmod 644 {} +
+chmod 755 docker/nginx
+chmod 644 docker/nginx/default.conf
 
 
 # Docker compose up
