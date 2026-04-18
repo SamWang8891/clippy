@@ -1,7 +1,7 @@
 # Configuration
-backend/config.yaml
-frontend/config.yaml
-frontend/public/config.yaml
+backend/config.json
+frontend/config.json
+frontend/public/config.json
 .env
 backend/.env
 frontend/.env
@@ -11,7 +11,6 @@ docker/backend/*
 !docker/backend/.gitkeep
 docker/frontend/*
 !docker/frontend/.gitkeep
-#!docker/nginx
 
 # Python
 __pycache__/
@@ -26,26 +25,27 @@ backend/ENV/
 *.egg-info/
 dist/
 build/
+.pytest_cache/
+.ruff_cache/
 
 # Node
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 
-# Uploads
+# Persistent state and uploads
+backend/data/
 backend/uploads/*
 !backend/uploads/.gitkeep
 
 # IDE
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
 *~
 .DS_Store
-*.imi
-backend/*.imi
-frontend/*.imis
 
 # Logs
 *.log
@@ -55,3 +55,4 @@ yarn-error.log*
 
 # AI Tools
 .claude/
+.superpowers/

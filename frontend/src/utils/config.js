@@ -1,55 +1,42 @@
 /**
  * Runtime configuration fetcher.
  *
- * Fetches config.yaml from the backend at runtime to get the backend URL.
- * This allows the frontend to be built once and deployed anywhere.
+ * The frontend is built once and deployed anywhere, so the backend URL is
+ * resolved at runtime from a sibling `config.json`. The build-time
+ * `VITE_API_URL` env var is used as a fallback so `vite dev` and tests work.
  */
 
 let backendUrl = null;
 
 /**
- * Initialize configuration by fetching config.yaml from the backend.
- * Uses VITE_API_URL as fallback if config.yaml fetch fails.
- *
- * @returns {Promise<string>} The backend URL
+ * Initialize configuration. Returns the resolved backend URL.
  */
 export async function initConfig() {
-    // Try to fetch from multiple potential locations
-    const configUrls = [
-        '/config.yaml',  // Same origin
-        import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/config.yaml` : null,
+    const candidates = [
+        '/config.json',
+        import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/config.json` : null,
     ].filter(Boolean);
 
-    for (const url of configUrls) {
+    for (const url of candidates) {
         try {
             const response = await fetch(url);
-            if (response.ok) {
-                const yamlText = await response.text();
-                // Simple YAML parsing for our basic config structure
-                const match = yamlText.match(/url:\s*["']?([^"'\n]+)["']?/);
-                if (match) {
-                    backendUrl = match[1].trim();
-                    console.log('Backend URL loaded from config.yaml:', backendUrl);
-                    return backendUrl;
-                }
+            if (!response.ok) continue;
+            const config = await response.json();
+            if (config && typeof config.url === 'string' && config.url.trim()) {
+                backendUrl = config.url.trim();
+                console.log('Backend URL loaded from config.json:', backendUrl);
+                return backendUrl;
             }
         } catch (err) {
             console.warn(`Failed to fetch config from ${url}:`, err.message);
         }
     }
 
-    // Fallback to environment variable
     backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:8123';
     console.log('Backend URL fallback to env:', backendUrl);
     return backendUrl;
 }
 
-/**
- * Get the configured backend URL.
- *
- * @returns {string} The backend URL
- * @throws {Error} If config hasn't been initialized
- */
 export function getBackendUrl() {
     if (!backendUrl) {
         throw new Error('Config not initialized. Call initConfig() first.');

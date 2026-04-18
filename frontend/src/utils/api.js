@@ -1,55 +1,39 @@
 /**
  * API client for Clippy backend.
  *
- * Handles all HTTP requests to the backend API, including session management,
- * block operations, and file uploads. Automatically encrypts data before sending.
+ * Wraps every backend endpoint and handles client-side encryption of any
+ * payload that travels through the server. The server only ever sees
+ * ciphertext — encryption keys live in the URL fragment, not on the wire.
  */
 
-import CryptoJS from 'crypto-js';
-import {decrypt, encrypt} from './encryption';
+import {encrypt} from './encryption';
 import {getBackendUrl} from './config';
 
-/**
- * Get the full API base URL
- * @returns {string} Full API base URL
- */
 function getApiBase() {
     return `${getBackendUrl()}/api/v1`;
 }
 
-/**
- * Handle API response with standardized format.
- * @param {Response} response - Fetch response object
- * @returns {Promise<Object>} Response data
- * @throws {Error} If response indicates an error
- */
 async function handleApiResponse(response) {
-    const json = await response.json();
-
-    // Handle standardized response format
-    if (json.status !== undefined) {
-        if (json.status >= 200 && json.status < 300) {
-            return json.data || json;
-        } else {
-            throw new Error(json.message || 'Request failed');
-        }
+    let json;
+    try {
+        json = await response.json();
+    } catch {
+        throw new Error(`Invalid JSON response (HTTP ${response.status})`);
     }
 
-    // Fallback for legacy responses
+    if (json.status !== undefined) {
+        if (json.status >= 200 && json.status < 300) {
+            return json.data ?? json;
+        }
+        throw new Error(json.message || 'Request failed');
+    }
+
     if (!response.ok) {
         throw new Error(json.detail || json.message || 'Request failed');
     }
-
     return json;
 }
 
-/**
- * Create a new collaborative session.
- *
- * @param {string} [userName] - Optional user name (random name generated if not provided)
- * @returns {Promise<Object>} Session data including connection_id, user_id, user_name, is_host
- * @throws {Error} If session creation fails (e.g., all connection IDs exhausted)
- */
 export async function getConnectionIdLength() {
     const response = await fetch(`${getApiBase()}/session/id-length`);
     const data = await handleApiResponse(response);
@@ -65,14 +49,6 @@ export async function createSession(userName) {
     return handleApiResponse(response);
 }
 
-/**
- * Join an existing session.
- *
- * @param {string} sessionId - The 6-character session ID to join
- * @param {string} [userName] - Optional user name (random name generated if not provided)
- * @returns {Promise<Object>} Session data including connection_id, user_id, user_name, is_host
- * @throws {Error} If session not found or not accepting new members
- */
 export async function joinSession(sessionId, userName) {
     const response = await fetch(`${getApiBase()}/session/join`, {
         method: 'POST',
@@ -82,22 +58,15 @@ export async function joinSession(sessionId, userName) {
     return handleApiResponse(response);
 }
 
-/**
- * Get session details including all users and blocks.
- *
- * @param {string} sessionId - The session ID
- * @returns {Promise<Object>} Session info with users, blocks, allow_join status, host_id
- * @throws {Error} If session not found
- */
-export async function getSession(sessionId) {
-    const response = await fetch(`${getApiBase()}/session/${sessionId}`);
+export async function getSession(sessionId, userId) {
+    const params = new URLSearchParams({user_id: userId ?? ''});
+    const response = await fetch(`${getApiBase()}/session/${encodeURIComponent(sessionId)}?${params}`);
     return handleApiResponse(response);
 }
 
 export async function destroySession(sessionId, userId) {
-    const response = await fetch(`${getApiBase()}/session/destroy?connection_id=${sessionId}&user_id=${userId}`, {
-        method: 'POST',
-    });
+    const params = new URLSearchParams({connection_id: sessionId, user_id: userId});
+    const response = await fetch(`${getApiBase()}/session/destroy?${params}`, {method: 'POST'});
     return handleApiResponse(response);
 }
 
@@ -127,17 +96,8 @@ export async function toggleJoin(sessionId, userId, allowJoin) {
     return handleApiResponse(response);
 }
 
-/**
- * Create a new text block (encrypted).
- *
- * @param {string} sessionId - The session ID
- * @param {string} userId - The user ID
- * @param {string} content - Plain text content to encrypt and store
- * @returns {Promise<Object>} Block data including block_id
- */
 export async function createTextBlock(sessionId, userId, content) {
-    const encryptedContent = encrypt(content);
-
+    const encryptedContent = await encrypt(content);
     const response = await fetch(`${getApiBase()}/block/create`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -151,34 +111,50 @@ export async function createTextBlock(sessionId, userId, content) {
     return handleApiResponse(response);
 }
 
-/**
- * Upload a file block (encrypted).
- *
- * @param {string} sessionId - The session ID
- * @param {string} userId - The user ID
- * @param {File} file - The file to encrypt and upload
- * @returns {Promise<Object>} Block data including block_id
- * @throws {Error} If file size exceeds maximum
- */
 export async function uploadFileBlock(sessionId, userId, file) {
-    // Read file as array buffer
     const arrayBuffer = await file.arrayBuffer();
-    const wordArray = CryptoJS.lib.WordArray.create(arrayBuffer);
-    const base64 = CryptoJS.enc.Base64.stringify(wordArray);
+    const encryptedBytes = await encrypt(new Uint8Array(arrayBuffer));
 
-    // Encrypt the base64 data
-    const encryptedData = encrypt(base64);
-
-    // Create a blob with encrypted data and send it
     const formData = new FormData();
     formData.append('connection_id', sessionId);
     formData.append('user_id', userId);
-
-    // Create a blob with the encrypted data
-    const encryptedBlob = new Blob([encryptedData], {type: 'application/octet-stream'});
-    formData.append('file', encryptedBlob, file.name);
+    const blob = new Blob([encryptedBytes], {type: 'application/octet-stream'});
+    formData.append('file', blob, file.name);
 
     const response = await fetch(`${getApiBase()}/block/upload`, {
+        method: 'POST',
+        body: formData,
+    });
+    return handleApiResponse(response);
+}
+
+export async function updateTextBlock(sessionId, userId, blockId, content) {
+    const encryptedContent = await encrypt(content);
+    const response = await fetch(`${getApiBase()}/block/update`, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            block_id: blockId,
+            content: encryptedContent,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
+export async function replaceFileBlock(sessionId, userId, blockId, file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const encryptedBytes = await encrypt(new Uint8Array(arrayBuffer));
+
+    const formData = new FormData();
+    formData.append('connection_id', sessionId);
+    formData.append('user_id', userId);
+    formData.append('block_id', blockId);
+    const blob = new Blob([encryptedBytes], {type: 'application/octet-stream'});
+    formData.append('file', blob, file.name);
+
+    const response = await fetch(`${getApiBase()}/block/replace`, {
         method: 'POST',
         body: formData,
     });
@@ -198,20 +174,7 @@ export async function deleteBlock(sessionId, userId, blockId) {
     return handleApiResponse(response);
 }
 
-export function getDownloadUrl(sessionId, blockId) {
-    return `${getApiBase()}/block/download/${sessionId}/${blockId}`;
-}
-
-export async function downloadBlock(sessionId, blockId) {
-    const response = await fetch(getDownloadUrl(sessionId, blockId));
-    const encryptedData = await response.text();
-
-    try {
-        // Try to decrypt as text first
-        const decryptedText = decrypt(encryptedData);
-        return decryptedText;
-    } catch (e) {
-        // If decryption fails, it might be binary data
-        return encryptedData;
-    }
+export function getDownloadUrl(sessionId, blockId, userId) {
+    const params = new URLSearchParams({user_id: userId ?? ''});
+    return `${getApiBase()}/block/download/${encodeURIComponent(sessionId)}/${encodeURIComponent(blockId)}?${params}`;
 }

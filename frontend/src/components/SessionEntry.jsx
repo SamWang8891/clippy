@@ -1,7 +1,18 @@
 import React, {useEffect, useState} from 'react';
 import {createSession, getConnectionIdLength, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
+import {generateSessionKey} from '../utils/encryption';
 import './SessionEntry.css';
+
+function readKeyFromHash() {
+    if (typeof window === 'undefined' || !window.location.hash) return null;
+    return window.location.hash.replace(/^#/, '').trim() || null;
+}
+
+function syncUrl(connectionId, key) {
+    const hash = key ? `#${key}` : '';
+    window.history.replaceState({}, '', `/${connectionId}${hash}`);
+}
 
 export function SessionEntry() {
     const [mode, setMode] = useState('create');
@@ -12,12 +23,10 @@ export function SessionEntry() {
     const [idLength, setIdLength] = useState(6);
     const {setSessionData} = useSession();
 
-    // Fetch connection ID length from backend on mount
     useEffect(() => {
         getConnectionIdLength().then(setIdLength).catch(() => {});
     }, []);
 
-    // Check URL for session ID on mount and auto-join
     useEffect(() => {
         const pathname = window.location.pathname;
         const urlSessionId = pathname.replace('/', '').trim().toLowerCase();
@@ -28,30 +37,28 @@ export function SessionEntry() {
             setSessionId(urlSessionId);
             setLoading(true);
             setError('');
+            const keyFromHash = readKeyFromHash();
             joinSession(urlSessionId, null)
                 .then((data) => {
-                    window.history.pushState({}, '', `/${data.session_id}`);
-                    setSessionData(data);
+                    const enriched = {...data, encryption_key: keyFromHash};
+                    syncUrl(enriched.connection_id, keyFromHash);
+                    setSessionData(enriched);
                 })
-                .catch((err) => {
-                    setError(err.message);
-                })
-                .finally(() => {
-                    setLoading(false);
-                });
+                .catch((err) => setError(err.message))
+                .finally(() => setLoading(false));
         }
-    }, [idLength]);
+    }, [idLength, setSessionData]);
 
     const handleCreate = async (e) => {
         e.preventDefault();
         setLoading(true);
         setError('');
-
         try {
+            const key = generateSessionKey();
             const data = await createSession(userName || null);
-            // Update URL with session ID
-            window.history.pushState({}, '', `/${data.session_id}`);
-            setSessionData(data);
+            const enriched = {...data, encryption_key: key};
+            syncUrl(enriched.connection_id, key);
+            setSessionData(enriched);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -63,12 +70,11 @@ export function SessionEntry() {
         e.preventDefault();
         setLoading(true);
         setError('');
-
         try {
             const data = await joinSession(sessionId, userName || null);
-            // Update URL with session ID
-            window.history.pushState({}, '', `/${data.session_id}`);
-            setSessionData(data);
+            const enriched = {...data, encryption_key: null};
+            syncUrl(enriched.connection_id, null);
+            setSessionData(enriched);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -76,75 +82,98 @@ export function SessionEntry() {
         }
     };
 
+    const placeholder = '_'.repeat(idLength);
+
     return (
-        <div className="session-entry">
-            <div className="session-entry-card">
-                <h1>Clippy</h1>
-                <p className="subtitle">Secure Collaborative Clipboard</p>
+        <div className="entry">
+            <header className="entry-head">
+                <h1 className="entry-word">Clippy</h1>
+                <p className="entry-sub">Secure collaborative clipboard.</p>
+            </header>
 
-                <div className="mode-tabs">
-                    <button
-                        className={mode === 'create' ? 'active' : ''}
-                        onClick={() => setMode('create')}
-                    >
-                        Create Connection
-                    </button>
-                    <button
-                        className={mode === 'join' ? 'active' : ''}
-                        onClick={() => setMode('join')}
-                    >
-                        Join Connection
-                    </button>
-                </div>
-
-                {mode === 'create' ? (
-                    <form onSubmit={handleCreate} className="session-form">
-                        <div className="form-group">
-                            <label>Your Name (optional)</label>
-                            <input
-                                type="text"
-                                value={userName}
-                                onChange={(e) => setUserName(e.target.value)}
-                                placeholder="Leave empty for random name"
-                                disabled={loading}
-                            />
-                        </div>
-                        <button type="submit" disabled={loading}>
-                            {loading ? 'Creating...' : 'Create Connection'}
-                        </button>
-                    </form>
-                ) : (
-                    <form onSubmit={handleJoin} className="session-form">
-                        <div className="form-group">
-                            <label>Connection ID</label>
-                            <input
-                                type="text"
-                                value={sessionId}
-                                onChange={(e) => setSessionId(e.target.value.toLowerCase())}
-                                placeholder={`Enter ${idLength}-character connection ID`}
-                                maxLength={idLength}
-                                required
-                                disabled={loading}
-                            />
-                        </div>
-                        <div className="form-group">
-                            <label>Your Name (optional)</label>
-                            <input
-                                type="text"
-                                value={userName}
-                                onChange={(e) => setUserName(e.target.value)}
-                                placeholder="Leave empty for random name"
-                                disabled={loading}
-                            />
-                        </div>
-                        <button type="submit" disabled={loading || sessionId.length !== idLength}>
-                            {loading ? 'Joining...' : 'Join Connection'}
-                        </button>
-                    </form>
-                )}
-
-                {error && <div className="error-message">{error}</div>}
+            <div className="entry-tabs" role="tablist">
+                <button
+                    role="tab"
+                    aria-selected={mode === 'create'}
+                    className={`entry-tab ${mode === 'create' ? 'is-active' : ''}`}
+                    onClick={() => setMode('create')}
+                    type="button"
+                >
+                    New
+                </button>
+                <button
+                    role="tab"
+                    aria-selected={mode === 'join'}
+                    className={`entry-tab ${mode === 'join' ? 'is-active' : ''}`}
+                    onClick={() => setMode('join')}
+                    type="button"
+                >
+                    Join
+                </button>
             </div>
+
+            {mode === 'create' ? (
+                <form onSubmit={handleCreate} className="entry-form">
+                    <div className="entry-field">
+                        <label htmlFor="entry-name">Name <span className="entry-optional">optional</span></label>
+                        <input
+                            id="entry-name"
+                            type="text"
+                            value={userName}
+                            onChange={(e) => setUserName(e.target.value)}
+                            placeholder="Leave blank for assigned name"
+                            disabled={loading}
+                        />
+                    </div>
+                    <button className="entry-submit" type="submit" disabled={loading}>
+                        {loading ? 'Creating…' : 'Create connection'}
+                    </button>
+                </form>
+            ) : (
+                <form onSubmit={handleJoin} className="entry-form">
+                    <div className="entry-field">
+                        <label htmlFor="entry-id">Connection ID</label>
+                        <input
+                            id="entry-id"
+                            className="entry-input-mono"
+                            type="text"
+                            value={sessionId}
+                            onChange={(e) => setSessionId(e.target.value.toLowerCase())}
+                            placeholder={placeholder}
+                            maxLength={idLength}
+                            required
+                            disabled={loading}
+                            autoCapitalize="off"
+                            autoCorrect="off"
+                            spellCheck="false"
+                        />
+                    </div>
+                    <div className="entry-field">
+                        <label htmlFor="entry-name-join">Name <span className="entry-optional">optional</span></label>
+                        <input
+                            id="entry-name-join"
+                            type="text"
+                            value={userName}
+                            onChange={(e) => setUserName(e.target.value)}
+                            placeholder="Leave blank for assigned name"
+                            disabled={loading}
+                        />
+                    </div>
+                    <button
+                        className="entry-submit"
+                        type="submit"
+                        disabled={loading || sessionId.length !== idLength}
+                    >
+                        {loading ? 'Joining…' : 'Join connection'}
+                    </button>
+                </form>
+            )}
+
+            {error && (
+                <div className="entry-error" role="alert">
+                    <span className="entry-error-label">Error —</span> {error}
+                </div>
+            )}
         </div>
     );
 }

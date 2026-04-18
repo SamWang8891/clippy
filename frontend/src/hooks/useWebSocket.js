@@ -1,39 +1,67 @@
 import {useEffect, useRef, useState} from 'react';
 import {getBackendUrl} from '../utils/config';
 
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+
 export function useWebSocket(sessionId, userId, onMessage) {
     const [isConnected, setIsConnected] = useState(false);
     const wsRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
     const pingIntervalRef = useRef(null);
+    // Latest onMessage handler in a ref so changing it does not tear down the socket.
+    const onMessageRef = useRef(onMessage);
+
+    useEffect(() => {
+        onMessageRef.current = onMessage;
+    }, [onMessage]);
 
     useEffect(() => {
         if (!sessionId || !userId) return;
 
+        let cancelled = false;
+        let attempt = 0;
+
+        const scheduleReconnect = () => {
+            if (cancelled) return;
+            // Exponential backoff with full jitter, capped at RECONNECT_MAX_MS.
+            const cap = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** attempt);
+            attempt += 1;
+            const delay = Math.floor(Math.random() * cap);
+            reconnectTimeoutRef.current = setTimeout(connect, delay);
+        };
+
         const connect = () => {
-            // Get backend URL from runtime config
+            if (cancelled) return;
+
             const apiUrl = getBackendUrl();
-            const wsUrl = apiUrl.replace('http://', 'ws://').replace('https://', 'wss://');
+            const wsUrl = apiUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
             const fullWsUrl = `${wsUrl}/ws/${sessionId}/${userId}`;
 
             console.log('Connecting to WebSocket:', fullWsUrl);
             wsRef.current = new WebSocket(fullWsUrl);
 
             wsRef.current.onopen = () => {
+                attempt = 0;
                 setIsConnected(true);
 
-                // Start ping interval to keep connection alive
                 pingIntervalRef.current = setInterval(() => {
                     if (wsRef.current?.readyState === WebSocket.OPEN) {
                         wsRef.current.send(JSON.stringify({type: 'ping'}));
                     }
-                }, 30000); // Ping every 30 seconds
+                }, 30000);
             };
 
             wsRef.current.onmessage = (event) => {
-                const message = JSON.parse(event.data);
+                let message;
+                try {
+                    message = JSON.parse(event.data);
+                } catch (err) {
+                    console.warn('Invalid WebSocket payload:', err);
+                    return;
+                }
                 if (message.type !== 'pong') {
-                    onMessage(message);
+                    onMessageRef.current?.(message);
                 }
             };
 
@@ -41,12 +69,9 @@ export function useWebSocket(sessionId, userId, onMessage) {
                 setIsConnected(false);
                 if (pingIntervalRef.current) {
                     clearInterval(pingIntervalRef.current);
+                    pingIntervalRef.current = null;
                 }
-
-                // Attempt to reconnect after 3 seconds
-                reconnectTimeoutRef.current = setTimeout(() => {
-                    connect();
-                }, 3000);
+                scheduleReconnect();
             };
 
             wsRef.current.onerror = () => {
@@ -57,17 +82,22 @@ export function useWebSocket(sessionId, userId, onMessage) {
         connect();
 
         return () => {
+            cancelled = true;
             if (pingIntervalRef.current) {
                 clearInterval(pingIntervalRef.current);
+                pingIntervalRef.current = null;
             }
             if (reconnectTimeoutRef.current) {
                 clearTimeout(reconnectTimeoutRef.current);
+                reconnectTimeoutRef.current = null;
             }
             if (wsRef.current) {
+                wsRef.current.onclose = null;
                 wsRef.current.close();
+                wsRef.current = null;
             }
         };
-    }, [sessionId, userId, onMessage]);
+    }, [sessionId, userId]);
 
     return {isConnected};
 }

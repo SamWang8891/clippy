@@ -1,0 +1,125 @@
+.id {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.id-code {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg);
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-elev);
+}
+
+.id-btn {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-muted);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.id-btn:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+}
+
+.qr-popup {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 40;
+    width: 260px;
+    padding: 12px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.qr-popup-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.qr-popup-label {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-subtle);
+    font-family: var(--font-mono);
+}
+
+.qr-popup-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    color: var(--fg-muted);
+    border-radius: 4px;
+    transition: color 120ms var(--ease), background 120ms var(--ease);
+}
+
+.qr-popup-close:hover {
+    color: var(--fg);
+    background: var(--bg);
+}
+
+.qr-popup-body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 240px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.qr-popup-body img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-width: 240px;
+}
+
+.qr-popup-loading,
+.qr-popup-err {
+    font-size: 13px;
+    color: var(--fg-muted);
+}
+
+.qr-popup-url {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--fg-subtle);
+    word-break: break-all;
+    line-height: 1.4;
+}
+
+@media (max-width: 639px) {
+    .qr-popup {
+        right: auto;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(280px, calc(100vw - 32px));
+    }
+}
