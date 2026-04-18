@@ -3,24 +3,36 @@ import {getBackendUrl} from '../utils/config';
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+// Closes that happen before the socket ever opens look like either a server
+// rejection (e.g. 403 from a stale session) or the network being down. After
+// this many in a row we assume the stored session is dead and bail out so the
+// caller can reset state instead of looping forever.
+const UNOPENED_CLOSE_LIMIT = 5;
 
-export function useWebSocket(sessionId, userId, onMessage) {
+export function useWebSocket(sessionId, userId, onMessage, onAuthRejected) {
     const [isConnected, setIsConnected] = useState(false);
     const wsRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
     const pingIntervalRef = useRef(null);
-    // Latest onMessage handler in a ref so changing it does not tear down the socket.
+    // Latest handlers in refs so changing them does not tear down the socket.
     const onMessageRef = useRef(onMessage);
+    const onAuthRejectedRef = useRef(onAuthRejected);
 
     useEffect(() => {
         onMessageRef.current = onMessage;
     }, [onMessage]);
 
     useEffect(() => {
+        onAuthRejectedRef.current = onAuthRejected;
+    }, [onAuthRejected]);
+
+    useEffect(() => {
         if (!sessionId || !userId) return;
 
         let cancelled = false;
         let attempt = 0;
+        let unopenedCloses = 0;
+        let openedThisAttempt = false;
 
         const scheduleReconnect = () => {
             if (cancelled) return;
@@ -34,6 +46,8 @@ export function useWebSocket(sessionId, userId, onMessage) {
         const connect = () => {
             if (cancelled) return;
 
+            openedThisAttempt = false;
+
             const apiUrl = getBackendUrl();
             const wsUrl = apiUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
             const fullWsUrl = `${wsUrl}/ws/${sessionId}/${userId}`;
@@ -43,6 +57,8 @@ export function useWebSocket(sessionId, userId, onMessage) {
 
             wsRef.current.onopen = () => {
                 attempt = 0;
+                openedThisAttempt = true;
+                unopenedCloses = 0;
                 setIsConnected(true);
 
                 pingIntervalRef.current = setInterval(() => {
@@ -70,6 +86,14 @@ export function useWebSocket(sessionId, userId, onMessage) {
                 if (pingIntervalRef.current) {
                     clearInterval(pingIntervalRef.current);
                     pingIntervalRef.current = null;
+                }
+                if (!openedThisAttempt) {
+                    unopenedCloses += 1;
+                    if (unopenedCloses >= UNOPENED_CLOSE_LIMIT) {
+                        cancelled = true;
+                        onAuthRejectedRef.current?.();
+                        return;
+                    }
                 }
                 scheduleReconnect();
             };
