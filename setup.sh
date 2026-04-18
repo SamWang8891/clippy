@@ -94,7 +94,9 @@ sed -i.bak "s|CONNECTION_ID_LENGTH=.*|CONNECTION_ID_LENGTH=${idlength}|g" docker
 rm -f docker/backend/.env.bak
 
 # Set restrictive permissions: the .env file may contain origin / size / id config.
-chmod 750 docker docker/backend docker/frontend docker/nginx 2>/dev/null || true
+# Containers run as root, so they retain read/write access (incl. uploads/);
+# these restrict access from other host users.
+find docker -type d -exec chmod 750 {} +
 find docker -type f -exec chmod 640 {} +
 
 
