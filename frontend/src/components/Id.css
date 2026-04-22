@@ -116,10 +116,16 @@
 }
 
 @media (max-width: 639px) {
+    /* Break out of .id's coordinate space — on narrow screens .id sits near
+       the left edge, so centering the popup on it clips the left side. */
     .qr-popup {
-        right: auto;
+        position: fixed;
+        top: 50%;
         left: 50%;
-        transform: translateX(-50%);
-        width: min(280px, calc(100vw - 32px));
+        right: auto;
+        transform: translate(-50%, -50%);
+        width: min(300px, calc(100vw - 32px));
+        max-height: calc(100vh - 32px);
+        overflow-y: auto;
     }
 }
