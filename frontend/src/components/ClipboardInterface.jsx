@@ -426,15 +426,23 @@ export {TextBlockForm};
 function FileUploadForm({onSubmit}) {
     const [file, setFile] = useState(null);
     const [dragging, setDragging] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
-        if (file) onSubmit(file);
+        if (!file || isUploading) return;
+        setIsUploading(true);
+        try {
+            await onSubmit(file);
+        } finally {
+            setIsUploading(false);
+        }
     };
 
     const handleDrop = (e) => {
         e.preventDefault();
         setDragging(false);
+        if (isUploading) return;
         if (e.dataTransfer.files?.[0]) setFile(e.dataTransfer.files[0]);
     };
 
@@ -446,10 +454,13 @@ function FileUploadForm({onSubmit}) {
                 onDragLeave={() => setDragging(false)}
                 onDrop={handleDrop}
             >
+                {/* No `required` attribute: the input is visually hidden, so browser
+                    constraint validation would block drag-drop submits without any
+                    feedback. We enforce "a file is present" via the submit handler. */}
                 <input
                     type="file"
-                    onChange={(e) => setFile(e.target.files[0])}
-                    required
+                    onChange={(e) => setFile(e.target.files[0] ?? null)}
+                    disabled={isUploading}
                 />
                 {file ? (
                     <div className="compose-drop-info">
@@ -466,8 +477,8 @@ function FileUploadForm({onSubmit}) {
                 <div className="compose-stats">
                     {file ? <span>{file.type || 'application/octet-stream'}</span> : <span>&nbsp;</span>}
                 </div>
-                <button type="submit" className="compose-submit" disabled={!file}>
-                    Upload
+                <button type="submit" className="compose-submit" disabled={!file || isUploading}>
+                    {isUploading ? 'Uploading…' : 'Upload'}
                 </button>
             </div>
         </form>
