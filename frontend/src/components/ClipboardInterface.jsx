@@ -4,7 +4,7 @@ import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useWebSocket} from '../hooks/useWebSocket';
 import {createTextBlock, deleteBlock, getSession, replaceFileBlock, updateTextBlock, uploadFileBlock} from '../utils/api';
-import {clearSessionKey, setSessionKey} from '../utils/encryption';
+import {clearSessionKey, setSessionKeyFromConnectionId} from '../utils/encryption';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
 import {Id} from './Id';
@@ -28,23 +28,26 @@ export function ClipboardInterface() {
     useEffect(() => {
         if (!sessionData?.connection_id) return;
 
-        try {
-            setSessionKey(sessionData.encryption_key || null);
-        } catch (err) {
-            console.error('Failed to install session key:', err);
-            setSessionKey(null);
-        }
+        let cancelled = false;
+        (async () => {
+            try {
+                await setSessionKeyFromConnectionId(sessionData.connection_id);
+            } catch (err) {
+                console.error('Failed to install session key:', err);
+                clearSessionKey();
+            }
+            if (cancelled) return;
+            await loadSession();
+        })();
 
-        loadSession();
-
-        const expectedHash = sessionData.encryption_key ? `#${sessionData.encryption_key}` : '';
-        const expectedUrl = `/${sessionData.connection_id}${expectedHash}`;
+        const expectedUrl = `/${sessionData.connection_id}`;
         const currentUrl = `${window.location.pathname}${window.location.hash}`;
         if (currentUrl !== expectedUrl) {
             window.history.replaceState({}, '', expectedUrl);
         }
 
         return () => {
+            cancelled = true;
             clearSessionKey();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps

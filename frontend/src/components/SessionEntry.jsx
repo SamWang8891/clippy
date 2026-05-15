@@ -1,17 +1,10 @@
 import React, {useEffect, useState} from 'react';
 import {createSession, getConnectionIdLength, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
-import {generateSessionKey} from '../utils/encryption';
 import './SessionEntry.css';
 
-function readKeyFromHash() {
-    if (typeof window === 'undefined' || !window.location.hash) return null;
-    return window.location.hash.replace(/^#/, '').trim() || null;
-}
-
-function syncUrl(connectionId, key) {
-    const hash = key ? `#${key}` : '';
-    window.history.replaceState({}, '', `/${connectionId}${hash}`);
+function syncUrl(connectionId) {
+    window.history.replaceState({}, '', `/${connectionId}`);
 }
 
 export function SessionEntry() {
@@ -37,12 +30,10 @@ export function SessionEntry() {
             setSessionId(urlSessionId);
             setLoading(true);
             setError('');
-            const keyFromHash = readKeyFromHash();
             joinSession(urlSessionId, null)
                 .then((data) => {
-                    const enriched = {...data, encryption_key: keyFromHash};
-                    syncUrl(enriched.connection_id, keyFromHash);
-                    setSessionData(enriched);
+                    syncUrl(data.connection_id);
+                    setSessionData(data);
                 })
                 .catch((err) => setError(err.message))
                 .finally(() => setLoading(false));
@@ -54,11 +45,9 @@ export function SessionEntry() {
         setLoading(true);
         setError('');
         try {
-            const key = generateSessionKey();
             const data = await createSession(userName || null);
-            const enriched = {...data, encryption_key: key};
-            syncUrl(enriched.connection_id, key);
-            setSessionData(enriched);
+            syncUrl(data.connection_id);
+            setSessionData(data);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -72,9 +61,8 @@ export function SessionEntry() {
         setError('');
         try {
             const data = await joinSession(sessionId, userName || null);
-            const enriched = {...data, encryption_key: null};
-            syncUrl(enriched.connection_id, null);
-            setSessionData(enriched);
+            syncUrl(data.connection_id);
+            setSessionData(data);
         } catch (err) {
             setError(err.message);
         } finally {

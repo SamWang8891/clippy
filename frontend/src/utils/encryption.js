@@ -1,39 +1,38 @@
 /**
  * Per-session AES-GCM encryption using the Web Crypto API.
  *
- * - Key: 32 random bytes generated client-side, base64url-encoded into the
- *   URL fragment so it never reaches the server.
+ * - Key: 32 bytes derived deterministically from the session's connection ID
+ *   via SHA-256 over `clippy-session-v1:{connection_id}`. Both the creator and
+ *   any joiner can compute it from the shared connection ID alone — no URL
+ *   fragment required.
  * - Cipher: AES-256-GCM with a fresh 96-bit IV per message. Authentication tag
  *   is appended by Web Crypto, so any bit-flip is detected on decrypt.
  * - Wire format: base64(iv ‖ ciphertextWithTag) — a single string suitable
  *   for both JSON payloads and request bodies.
+ *
+ * Note: because the key is derived from the connection ID, the server (which
+ * issues IDs) could theoretically derive it too. It does not. This gives
+ * encrypted-at-rest properties and opaque ciphertext on the wire, but is not
+ * a strict end-to-end model against a malicious server.
  */
 
 const AES_GCM = 'AES-GCM';
 const IV_LENGTH = 12;
+const KDF_PREFIX = 'clippy-session-v1:';
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
 let sessionKeyBytes = null; // Uint8Array(32)
 let cryptoKeyPromise = null; // Promise<CryptoKey>
 
-export function generateSessionKey() {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    return bytesToBase64Url(bytes);
-}
-
-export function setSessionKey(base64UrlKey) {
-    if (!base64UrlKey) {
-        sessionKeyBytes = null;
-        cryptoKeyPromise = null;
+export async function setSessionKeyFromConnectionId(connectionId) {
+    if (!connectionId) {
+        clearSessionKey();
         return;
     }
-    const bytes = base64UrlToBytes(base64UrlKey);
-    if (bytes.length !== 32) {
-        throw new Error(`Invalid session key length: expected 32 bytes, got ${bytes.length}`);
-    }
-    sessionKeyBytes = bytes;
+    const input = ENCODER.encode(`${KDF_PREFIX}${connectionId}`);
+    const digest = await crypto.subtle.digest('SHA-256', input);
+    sessionKeyBytes = new Uint8Array(digest);
     cryptoKeyPromise = null; // re-import on next use
 }
 
@@ -119,14 +118,4 @@ function base64ToBytes(b64) {
         bytes[i] = binary.charCodeAt(i);
     }
     return bytes;
-}
-
-function bytesToBase64Url(bytes) {
-    return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function base64UrlToBytes(b64url) {
-    const padded = b64url.replace(/-/g, '+').replace(/_/g, '/')
-        + '==='.slice((b64url.length + 3) % 4);
-    return base64ToBytes(padded);
 }
