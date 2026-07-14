@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import secrets
 import shutil
 import string
 import uuid
@@ -48,6 +49,8 @@ MAX_BLOCKS_PER_SESSION = int(os.getenv("MAX_BLOCKS_PER_SESSION", "200"))
 MAX_TEXT_BLOCK_LENGTH = int(os.getenv("MAX_TEXT_BLOCK_LENGTH", "1048576"))  # 1 MiB ciphertext
 MAX_SESSION_BYTES_GIB = float(os.getenv("MAX_SESSION_BYTES_GIB", "5"))
 MAX_SESSION_BYTES = int(MAX_SESSION_BYTES_GIB * 1024 * 1024 * 1024)
+RAW_LINK_CODE_LENGTH = 4
+RAW_LINK_TTL_SECONDS = int(os.getenv("RAW_LINK_TTL_SECONDS", "600"))
 
 # Initialize FastAPI app
 @asynccontextmanager
@@ -57,6 +60,7 @@ async def lifespan(_app: FastAPI):
     Shutdown: flush state so the next process starts where we left off.
     """
     load_sessions_sync()
+    load_raw_links_sync()
 
     if UPLOAD_DIR.exists():
         valid_session_ids = set(sessions.keys())
@@ -69,10 +73,17 @@ async def lifespan(_app: FastAPI):
                     item.unlink()
                 except OSError:
                     pass
-        logger.info(
-            "Startup: restored %d session(s); pruned orphan entries in %s",
-            len(sessions), UPLOAD_DIR,
-        )
+
+    if RAW_DIR.exists():
+        valid_raw_ids = set(raw_links.keys())
+        for item in RAW_DIR.iterdir():
+            if item.is_dir() and item.name not in valid_raw_ids:
+                shutil.rmtree(item, ignore_errors=True)
+
+    logger.info(
+        "Startup: restored %d session(s), %d raw-link group(s)",
+        len(sessions), len(raw_links),
+    )
 
     cleanup_task = asyncio.create_task(cleanup_expired_sessions())
     persistence_task = asyncio.create_task(persistence_loop())
@@ -91,6 +102,10 @@ async def lifespan(_app: FastAPI):
             await save_sessions()
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to flush sessions on shutdown: %s", e)
+        try:
+            await save_raw_links()
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to flush raw links on shutdown: %s", e)
 
 
 app = FastAPI(
@@ -117,7 +132,10 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
 DATA_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+RAW_DIR = DATA_DIR / "raw"
+RAW_DIR.mkdir(exist_ok=True)
 SESSIONS_FILE = DATA_DIR / "sessions.json"
+RAW_LINKS_FILE = DATA_DIR / "raw_links.json"
 MAX_FILE_SIZE = int(MAX_FILE_SIZE_GIB * 1024 * 1024 * 1024)
 SESSION_TIMEOUT = timedelta(seconds=SESSION_TIMEOUT_SECONDS)
 
@@ -189,6 +207,23 @@ class ToggleJoinRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
     allow_join: bool
+
+
+class RawLink(BaseModel):
+    code: str
+    connection_id: str
+    block_id: str
+    content_type: Literal["text", "file"]
+    filename: str
+    original_filename: str | None = None
+    created_at: str
+
+
+class CreateRawTextRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
+    content: str = Field(max_length=MAX_TEXT_BLOCK_LENGTH)
 
 
 # Session storage
@@ -392,21 +427,73 @@ def load_sessions_sync() -> None:
 
 
 async def persistence_loop() -> None:
-    """Background task that flushes the dirty flag at a fixed interval."""
-    global _sessions_dirty
+    """Background task that flushes dirty flags at a fixed interval."""
+    global _sessions_dirty, _raw_links_dirty
     while True:
         try:
             await asyncio.sleep(PERSIST_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             return
-        if not _sessions_dirty:
-            continue
-        _sessions_dirty = False
+        if _sessions_dirty:
+            _sessions_dirty = False
+            try:
+                await save_sessions()
+            except Exception as e:  # noqa: BLE001
+                _sessions_dirty = True
+                logger.error("Failed to persist sessions: %s", e)
+        if _raw_links_dirty:
+            _raw_links_dirty = False
+            try:
+                await save_raw_links()
+            except Exception as e:  # noqa: BLE001
+                _raw_links_dirty = True
+                logger.error("Failed to persist raw links: %s", e)
+
+
+# Raw-link storage — decoupled from sessions so links survive session teardown.
+raw_links: dict[str, dict[str, RawLink]] = {}  # connection_id -> {code -> RawLink}
+raw_link_expiry: dict[str, datetime] = {}  # connection_id -> when to delete
+_raw_links_dirty = False
+
+
+def mark_raw_links_dirty() -> None:
+    global _raw_links_dirty
+    _raw_links_dirty = True
+
+
+async def save_raw_links() -> None:
+    payload = json.dumps({
+        "links": {
+            cid: {code: rl.model_dump() for code, rl in links.items()}
+            for cid, links in raw_links.items()
+        },
+        "expiry": {cid: dt.isoformat() for cid, dt in raw_link_expiry.items()},
+    })
+    tmp_path = RAW_LINKS_FILE.with_suffix(".tmp")
+    async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
+        await f.write(payload)
+    os.replace(tmp_path, RAW_LINKS_FILE)
+
+
+def load_raw_links_sync() -> None:
+    if not RAW_LINKS_FILE.exists():
+        return
+    try:
+        with open(RAW_LINKS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.error("Failed to load raw links snapshot: %s", e)
+        return
+    for cid, links in data.get("links", {}).items():
         try:
-            await save_sessions()
+            raw_links[cid] = {code: RawLink(**rl) for code, rl in links.items()}
         except Exception as e:  # noqa: BLE001
-            _sessions_dirty = True
-            logger.error("Failed to persist sessions: %s", e)
+            logger.warning("Skipping malformed raw links for %s: %s", cid, e)
+    for cid, dt_str in data.get("expiry", {}).items():
+        try:
+            raw_link_expiry[cid] = datetime.fromisoformat(dt_str)
+        except (ValueError, TypeError) as e:
+            logger.warning("Skipping malformed raw link expiry for %s: %s", cid, e)
 
 
 def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> JSONResponse:
@@ -452,6 +539,16 @@ def generate_connection_id() -> str | None:
     return None
 
 
+def generate_raw_code(connection_id: str) -> str | None:
+    existing = raw_links.get(connection_id, {})
+    chars = string.ascii_lowercase + string.digits
+    for _ in range(1000):
+        code = "".join(secrets.choice(chars) for _ in range(RAW_LINK_CODE_LENGTH))
+        if code not in existing:
+            return code
+    return None
+
+
 _NAME_ADJECTIVES = (
     "Happy", "Clever", "Swift", "Bright", "Cool", "Smart", "Quick", "Calm", "Bold", "Wise",
     "Brave", "Gentle", "Lively", "Witty", "Agile", "Keen", "Noble", "Proud", "Merry", "Jolly",
@@ -494,11 +591,15 @@ async def _teardown_session(connection_id: str, reason: str):
     if session.session_dir.exists():
         shutil.rmtree(session.session_dir, ignore_errors=True)
 
+    if connection_id in raw_links:
+        raw_link_expiry[connection_id] = datetime.now() + timedelta(seconds=RAW_LINK_TTL_SECONDS)
+        mark_raw_links_dirty()
+
     mark_sessions_dirty()
 
 
 async def cleanup_expired_sessions():
-    """Periodically reap sessions that have exceeded the inactivity timeout."""
+    """Periodically reap sessions and stale raw links."""
     while True:
         try:
             await asyncio.sleep(60)
@@ -507,6 +608,17 @@ async def cleanup_expired_sessions():
         expired = [sid for sid, session in sessions.items() if session.is_expired()]
         for sid in expired:
             await _teardown_session(sid, "timeout")
+
+        now = datetime.now()
+        stale = [cid for cid, exp in raw_link_expiry.items() if now > exp]
+        for cid in stale:
+            raw_links.pop(cid, None)
+            raw_link_expiry.pop(cid, None)
+            raw_dir = RAW_DIR / cid
+            if raw_dir.exists():
+                shutil.rmtree(raw_dir, ignore_errors=True)
+        if stale:
+            mark_raw_links_dirty()
 
 
 @app.get(
@@ -1230,6 +1342,156 @@ async def download_block(connection_id: str, block_id: str, user_id: str):
         )
 
     return api_response(HTTPStatus.BAD_REQUEST, "Invalid block type")
+
+
+# --- Raw link endpoints ---
+
+
+@app.post(
+    "/api/v1/raw/text",
+    summary="Create Raw Text Link",
+    description="Generate a public short link that serves the decrypted text"
+)
+async def create_raw_text_link(request: CreateRawTextRequest):
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+    if not session.has_member(request.user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    if request.block_id not in session.blocks:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+
+    code = generate_raw_code(connection_id)
+    if code is None:
+        return api_response(HTTPStatus.SERVICE_UNAVAILABLE, "Unable to generate raw link")
+
+    raw_dir = RAW_DIR / connection_id
+    raw_dir.mkdir(exist_ok=True)
+    filename = f"{code}.txt"
+    async with aiofiles.open(raw_dir / filename, "w", encoding="utf-8") as f:
+        await f.write(request.content)
+
+    link = RawLink(
+        code=code,
+        connection_id=connection_id,
+        block_id=request.block_id,
+        content_type="text",
+        filename=filename,
+        created_at=datetime.now().isoformat(),
+    )
+    raw_links.setdefault(connection_id, {})[code] = link
+    mark_raw_links_dirty()
+
+    return api_response(HTTPStatus.OK, "Raw link created", {"code": code})
+
+
+@app.post(
+    "/api/v1/raw/file",
+    summary="Create Raw File Link",
+    description="Generate a public short link that serves the decrypted file"
+)
+async def create_raw_file_link(
+        connection_id: str = Form(...),  # noqa: B008
+        user_id: str = Form(...),  # noqa: B008
+        block_id: str = Form(...),  # noqa: B008
+        original_filename: str = Form(""),  # noqa: B008
+        file: UploadFile = File(...),  # noqa: B008
+):
+    connection_id = connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+    if not session.has_member(user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    if block_id not in session.blocks:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+
+    code = generate_raw_code(connection_id)
+    if code is None:
+        return api_response(HTTPStatus.SERVICE_UNAVAILABLE, "Unable to generate raw link")
+
+    raw_suffix = Path(original_filename or file.filename or "").suffix
+    safe_suffix = "".join(c for c in raw_suffix if c.isalnum() or c in "._-")[:32]
+    filename = f"{code}{safe_suffix}"
+
+    raw_dir = RAW_DIR / connection_id
+    raw_dir.mkdir(exist_ok=True)
+    file_path = raw_dir / filename
+
+    chunk_size = 1024 * 1024
+    bytes_written = 0
+    try:
+        async with aiofiles.open(file_path, "wb") as f:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                bytes_written += len(chunk)
+                if bytes_written > MAX_FILE_SIZE:
+                    break
+                await f.write(chunk)
+    except Exception:
+        file_path.unlink(missing_ok=True)
+        raise
+
+    if bytes_written > MAX_FILE_SIZE:
+        file_path.unlink(missing_ok=True)
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "File too large")
+
+    link = RawLink(
+        code=code,
+        connection_id=connection_id,
+        block_id=block_id,
+        content_type="file",
+        filename=filename,
+        original_filename=original_filename or file.filename or "download",
+        created_at=datetime.now().isoformat(),
+    )
+    raw_links.setdefault(connection_id, {})[code] = link
+    mark_raw_links_dirty()
+
+    return api_response(HTTPStatus.OK, "Raw link created", {"code": code})
+
+
+@app.get("/r/{connection_id}/{code}")
+async def serve_raw_link(connection_id: str, code: str):
+    connection_id = connection_id.lower()
+    code = code.lower()
+
+    session_links = raw_links.get(connection_id)
+    if not session_links:
+        return api_response(HTTPStatus.NOT_FOUND, "Link not found")
+
+    link = session_links.get(code)
+    if not link:
+        return api_response(HTTPStatus.NOT_FOUND, "Link not found")
+
+    expiry = raw_link_expiry.get(connection_id)
+    if expiry and datetime.now() > expiry:
+        return api_response(HTTPStatus.GONE, "Link expired")
+
+    raw_file = RAW_DIR / connection_id / link.filename
+    if not raw_file.exists():
+        return api_response(HTTPStatus.NOT_FOUND, "Content not found")
+
+    if link.content_type == "text":
+        return FileResponse(
+            raw_file,
+            media_type="text/plain; charset=utf-8",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    return FileResponse(
+        raw_file,
+        filename=link.original_filename or "download",
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def _remove_user_after_grace(connection_id: str, user_id: str):
