@@ -1,0 +1,96 @@
+name: Deploy to Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Base URL (e.g., https://clippy.example.com)"
+        required: true
+      port:
+        description: "Expose port number"
+        required: true
+        default: "8080"
+      max_file_size:
+        description: "Max file upload size in GiB"
+        required: true
+        default: "1"
+      id_length:
+        description: "Connection ID length (4-6)"
+        required: true
+        default: "6"
+      deploy_path:
+        description: "Absolute path to deploy directory on the server"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Download latest release
+        uses: dsaltares/fetch-gh-release-asset@aa2ab1243d6e0d5b405b973c89fa4d06a2d0fff7 # v1.1.2
+        with:
+          file: release.zip
+          target: release.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean deploy path
+        env:
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+        run: |
+          if [ -d "$DEPLOY_PATH" ] && [ "$(ls -A "$DEPLOY_PATH")" ]; then
+            if [ ! -f "$DEPLOY_PATH/docker-compose.yaml" ]; then
+              echo "Error: No docker-compose.yaml found at $DEPLOY_PATH"
+              exit 1
+            fi
+            if ! grep -q 'name: clippy' "$DEPLOY_PATH/docker-compose.yaml"; then
+              echo "Error: docker-compose.yaml at $DEPLOY_PATH is not a Clippy installation"
+              exit 1
+            fi
+            rm -rf "$DEPLOY_PATH"
+          fi
+          mkdir -p "$DEPLOY_PATH"
+
+      - name: Extract release
+        env:
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+        run: |
+          unzip -q release.zip
+          mv clippy/* "$DEPLOY_PATH"/
+
+      - name: Run setup
+        env:
+          CLIPPY_BASE_URL: ${{ inputs.base_url }}
+          CLIPPY_PORT: ${{ inputs.port }}
+          CLIPPY_MAX_FILE_SIZE: ${{ inputs.max_file_size }}
+          CLIPPY_ID_LENGTH: ${{ inputs.id_length }}
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+        working-directory: ${{ inputs.deploy_path }}
+        run: |
+          chmod +x setup.sh
+          ./setup.sh
+
+      - name: Verify containers are running
+        run: |
+          sleep 5
+          if docker ps --filter "name=clippy-python" --filter "status=running" -q | grep -q .; then
+            echo "clippy-python is running"
+          else
+            echo "Error: clippy-python is not running"
+            docker logs clippy-python --tail 20
+            exit 1
+          fi
+          if docker ps --filter "name=clippy-nginx" --filter "status=running" -q | grep -q .; then
+            echo "clippy-nginx is running"
+          else
+            echo "Error: clippy-nginx is not running"
+            docker logs clippy-nginx --tail 20
+            exit 1
+          fi
+
+      - name: Clean up
+        if: always()
+        run: rm -f release.zip
