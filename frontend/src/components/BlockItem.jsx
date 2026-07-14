@@ -2,7 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import hljs from 'highlight.js/lib/common';
 import {useToast} from '../context/ToastContext';
 import {decrypt, decryptToBytes} from '../utils/encryption';
-import {getDownloadUrl} from '../utils/api';
+import {getDownloadUrl, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock, parseBlockContent} from '../utils/codeBlock';
 import './BlockItem.css';
 
@@ -39,6 +39,13 @@ const IconReplace = (props) => (
     <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
         <path d="M3 6.5A4.5 4.5 0 0 1 11 4M13 9.5A4.5 4.5 0 0 1 5 12" />
         <path d="M11 2v2.5h-2.5M5 14v-2.5h2.5" />
+    </svg>
+);
+
+const IconRaw = (props) => (
+    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+        <path d="M6.5 9.5a3 3 0 0 0 4.2.4l2-2a3 3 0 0 0-4.2-4.2L7.2 5" />
+        <path d="M9.5 6.5a3 3 0 0 0-4.2-.4l-2 2a3 3 0 0 0 4.2 4.2L8.8 11" />
     </svg>
 );
 
@@ -101,6 +108,7 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
     const [editMode, setEditMode] = useState('text');
     const [isSaving, setIsSaving] = useState(false);
     const [isReplacing, setIsReplacing] = useState(false);
+    const [isGeneratingRaw, setIsGeneratingRaw] = useState(false);
     const fileInputRef = useRef(null);
     const toast = useToast();
 
@@ -210,6 +218,32 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
             /* toast handled upstream */
         } finally {
             setIsReplacing(false);
+        }
+    };
+
+    const handleGetRawLink = async () => {
+        setIsGeneratingRaw(true);
+        try {
+            let data;
+            if (block.type === 'text') {
+                data = await createRawTextLink(sessionId, userId, block.id, parsed.body);
+            } else {
+                const response = await fetch(getDownloadUrl(sessionId, block.id, userId));
+                if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
+                const encryptedData = await response.text();
+                const bytes = await decryptToBytes(encryptedData);
+                const blob = new Blob([bytes], {type: 'application/octet-stream'});
+                const originalFilename = block.original_filename || block.filename || 'download';
+                data = await createRawFileLink(sessionId, userId, block.id, blob, originalFilename);
+            }
+            const url = getRawLinkUrl(sessionId, data.code);
+            await navigator.clipboard.writeText(url);
+            toast.success('Raw link copied');
+        } catch (err) {
+            console.error('Raw link error:', err);
+            toast.error('Failed to create raw link');
+        } finally {
+            setIsGeneratingRaw(false);
         }
     };
 
@@ -356,6 +390,16 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
                             >
                                 <IconCopy />
                             </button>
+                            <button
+                                type="button"
+                                onClick={handleGetRawLink}
+                                className="block-action"
+                                disabled={isGeneratingRaw}
+                                aria-label="Raw link"
+                                title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
+                            >
+                                <IconRaw />
+                            </button>
                             {onUpdateText && (
                                 <button
                                     type="button"
@@ -379,6 +423,16 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
                                 title="Download"
                             >
                                 <IconDownload />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleGetRawLink}
+                                className="block-action"
+                                disabled={isGeneratingRaw}
+                                aria-label="Raw link"
+                                title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
+                            >
+                                <IconRaw />
                             </button>
                             {onReplaceFile && (
                                 <>

@@ -178,3 +178,36 @@ export function getDownloadUrl(sessionId, blockId, userId) {
     const params = new URLSearchParams({user_id: userId ?? ''});
     return `${getApiBase()}/block/download/${encodeURIComponent(sessionId)}/${encodeURIComponent(blockId)}?${params}`;
 }
+
+export async function createRawTextLink(sessionId, userId, blockId, content) {
+    const response = await fetch(`${getApiBase()}/raw/text`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            block_id: blockId,
+            content,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
+export async function createRawFileLink(sessionId, userId, blockId, decryptedBlob, originalFilename) {
+    const formData = new FormData();
+    formData.append('connection_id', sessionId);
+    formData.append('user_id', userId);
+    formData.append('block_id', blockId);
+    formData.append('original_filename', originalFilename);
+    formData.append('file', decryptedBlob, originalFilename);
+
+    const response = await fetch(`${getApiBase()}/raw/file`, {
+        method: 'POST',
+        body: formData,
+    });
+    return handleApiResponse(response);
+}
+
+export function getRawLinkUrl(sessionId, code) {
+    return `${window.location.origin}/r/${encodeURIComponent(sessionId)}/${encodeURIComponent(code)}`;
+}

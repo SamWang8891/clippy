@@ -17,6 +17,10 @@ export default defineConfig(({mode}) => {
                     target: apiUrl,
                     changeOrigin: true,
                 },
+                '/r/': {
+                    target: apiUrl,
+                    changeOrigin: true,
+                },
                 '/ws': {
                     target: wsUrl,
                     ws: true,
