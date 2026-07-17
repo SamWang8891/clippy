@@ -1,16 +1,12 @@
 name: Build and Release Package
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      tag_name:
-        description: "Tag name for the release (e.g., v1.0.0)"
+      version:
+        description: "Version to release (e.g., 1.5.1)"
         required: true
-      release_name:
-        description: "Name of the release"
-        required: true
+        type: string
 
 jobs:
   build_and_package:
@@ -19,52 +15,37 @@ jobs:
       contents: write
 
     steps:
-      # Step 1: Checkout the repository
       - name: Checkout code
         uses: actions/checkout@v6
 
-      # Step 2: Install dependencies and build web-frontend
       - name: Install and Build Web Frontend
         working-directory: ./frontend
         run: |
           npm install
           npm run build
 
-      # Step 3: Prepare docker directories with clean templates
       - name: Prepare Docker Templates
         run: |
-          # Clean docker/backend (keep .gitkeep)
           find docker/backend -mindepth 1 ! -name '.gitkeep' -delete
-          # Clean docker/frontend (keep .gitkeep)
           find docker/frontend -mindepth 1 ! -name '.gitkeep' -delete
-
-          # Copy clean .env template for backend
           cp backend/.env.example docker/backend/.env
-          
-          # Copy clean .env template for docker compose
           cp .env.example .env
-
-          # Copy clean config.yaml template for frontend
           cp frontend/public/config.example.yaml docker/frontend/config.yaml
 
-      # Step 4: Copy built frontend to docker/frontend
       - name: Copy Frontend Build
         run: |
           cp -r frontend/dist/* docker/frontend/
 
-      # Step 5: Copy backend files to docker/backend
       - name: Copy Backend Files
         run: |
           cp backend/app.py docker/backend/
           cp backend/requirements.txt docker/backend/
           mkdir -p docker/backend/uploads
 
-      # Step 6: Clean up backup files
       - name: Clean up backup files
         run: |
           find . -name "*.bak" -delete
 
-      # Step 7: Remove source files and prepare release structure
       - name: Prepare Release Structure
         run: |
           mkdir clippy
@@ -72,17 +53,15 @@ jobs:
           shopt -s extglob dotglob
           mv !(clippy) clippy/
 
-      # Step 8: Package into ZIP
       - name: Create Release ZIP
         run: |
           zip -r release.zip clippy/
 
-      # Step 9: Create GitHub Release and Upload Asset
       - name: Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: ${{ github.event.inputs.tag_name }}
-          name: ${{ github.event.inputs.release_name }}
+          tag_name: v${{ inputs.version }}
+          name: Clippy v${{ inputs.version }}
           files: release.zip
           generate_release_notes: true

@@ -9,6 +9,8 @@ on:
 jobs:
   check-version:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.versions.outputs.current }}
     steps:
       - name: Checkout current
         uses: actions/checkout@v6
@@ -72,3 +74,10 @@ jobs:
             }
 
           echo "Version bump OK: $PREVIOUS -> $CURRENT"
+
+  release:
+    needs: check-version
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/create_release.yaml
+    with:
+      version: ${{ needs.check-version.outputs.version }}
