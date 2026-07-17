@@ -131,6 +131,10 @@ export function ClipboardInterface() {
                 setSession((prev) => ({...prev, allow_join: message.allow_join}));
                 break;
 
+            case 'curl_permission_changed':
+                setSession((prev) => ({...prev, allow_curl_upload: message.allow_curl_upload}));
+                break;
+
             case 'session_destroyed':
                 showNotification('Connection destroyed');
                 setTimeout(() => {

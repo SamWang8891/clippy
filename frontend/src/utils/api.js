@@ -96,6 +96,19 @@ export async function toggleJoin(sessionId, userId, allowJoin) {
     return handleApiResponse(response);
 }
 
+export async function toggleCurl(sessionId, userId, allowCurlUpload) {
+    const response = await fetch(`${getApiBase()}/session/toggle_curl`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            allow_curl_upload: allowCurlUpload,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
 export async function createTextBlock(sessionId, userId, content) {
     const encryptedContent = await encrypt(content);
     const response = await fetch(`${getApiBase()}/block/create`, {
