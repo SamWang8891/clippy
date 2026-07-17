@@ -45,6 +45,17 @@
     color: var(--border-strong);
 }
 
+.block-curl-tag {
+    padding: 1px 5px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
 .block-content {
     min-width: 0;
 }

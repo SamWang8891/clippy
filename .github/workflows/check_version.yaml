@@ -1,0 +1,74 @@
+name: Check Version
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, dev]
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Collect versions from all sources
+        id: versions
+        run: |
+          backend_toml=$(grep -Po '(?<=^version = ")[^"]+' backend/pyproject.toml)
+          backend_app=$(grep -Po "(?<=version=\")[^\"]+" backend/app.py)
+          frontend_pkg=$(node -p "require('./frontend/package.json').version")
+          menu_jsx=$(grep -Po "(?<=APP_VERSION = 'v)[^']+" frontend/src/components/Menu.jsx)
+          app_jsx=$(grep -Po '(?<=Clippy v)[0-9]+\.[0-9]+\.[0-9]+' frontend/src/App.jsx)
+          readme_en=$(grep -Po '(?<=Version-v)[0-9]+\.[0-9]+\.[0-9]+' README.md)
+          readme_tw=$(grep -Po '(?<=Version-v)[0-9]+\.[0-9]+\.[0-9]+' README.zh-TW.md)
+
+          echo "backend_toml=$backend_toml"
+          echo "backend_app=$backend_app"
+          echo "frontend_pkg=$frontend_pkg"
+          echo "menu_jsx=$menu_jsx"
+          echo "app_jsx=$app_jsx"
+          echo "readme_en=$readme_en"
+          echo "readme_tw=$readme_tw"
+
+          echo "current=$backend_toml" >> "$GITHUB_OUTPUT"
+
+          if [ "$backend_toml" != "$backend_app" ] || \
+             [ "$backend_toml" != "$frontend_pkg" ] || \
+             [ "$backend_toml" != "$menu_jsx" ] || \
+             [ "$backend_toml" != "$app_jsx" ] || \
+             [ "$backend_toml" != "$readme_en" ] || \
+             [ "$backend_toml" != "$readme_tw" ]; then
+            echo "::error::Version mismatch detected!"
+            echo "  backend/pyproject.toml: $backend_toml"
+            echo "  backend/app.py:         $backend_app"
+            echo "  frontend/package.json:  $frontend_pkg"
+            echo "  Menu.jsx:               $menu_jsx"
+            echo "  App.jsx:                $app_jsx"
+            echo "  README.md:              $readme_en"
+            echo "  README.zh-TW.md:        $readme_tw"
+            exit 1
+          fi
+
+          echo "All versions match: $backend_toml"
+
+      - name: Check version is greater than previous
+        if: github.event_name == 'pull_request'
+        run: |
+          CURRENT="${{ steps.versions.outputs.current }}"
+          PREVIOUS=$(git show "${{ github.event.pull_request.base.sha }}:backend/pyproject.toml" 2>/dev/null \
+            | grep -Po '(?<=^version = ")[^"]+' || echo "0.0.0")
+
+          echo "Previous: $PREVIOUS"
+          echo "Current:  $CURRENT"
+
+          printf '%s\n%s\n' "$PREVIOUS" "$CURRENT" | sort -V -C && \
+            [ "$CURRENT" != "$PREVIOUS" ] || {
+              echo "::error::Version $CURRENT must be greater than previous $PREVIOUS"
+              exit 1
+            }
+
+          echo "Version bump OK: $PREVIOUS -> $CURRENT"

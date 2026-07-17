@@ -1,12 +1,12 @@
-import React from 'react';
+import React, {useState} from 'react';
 import {useSession} from '../context/SessionContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useToast} from '../context/ToastContext';
 import {useTheme} from '../hooks/useTheme';
-import {destroySession, toggleJoin, transferHost} from '../utils/api';
+import {destroySession, toggleCurl, toggleJoin, transferHost} from '../utils/api';
 import './Menu.css';
 
-const APP_VERSION = 'v1.3.1';
+const APP_VERSION = 'v1.5.0';
 const GITHUB_URL = 'https://github.com/SamWang8891/clippy';
 
 const THEME_OPTIONS = [
@@ -15,12 +15,19 @@ const THEME_OPTIONS = [
     {id: 'dark', label: 'Dark'},
 ];
 
+const CURL_TABS = [
+    {id: 'unix', label: 'Linux / macOS'},
+    {id: 'win', label: 'Windows'},
+];
+
 export function Menu({session, users, currentUser, onClose}) {
     const {sessionData, clearSession} = useSession();
     const confirm = useConfirm();
     const toast = useToast();
     const {theme, setTheme} = useTheme();
     const isHost = currentUser?.is_host;
+    const [curlTab, setCurlTab] = useState('unix');
+    const [curlExpanded, setCurlExpanded] = useState(true);
 
     const handleDestroyConnection = async () => {
         const confirmed = await confirm({
@@ -71,6 +78,29 @@ export function Menu({session, users, currentUser, onClose}) {
         }
     };
 
+    const handleToggleCurl = async () => {
+        try {
+            await toggleCurl(sessionData.connection_id, sessionData.user_id, !session?.allow_curl_upload);
+            toast.success(session?.allow_curl_upload ? 'Curl upload disabled' : 'Curl upload enabled');
+        } catch (err) {
+            toast.error('Failed to toggle curl upload: ' + err.message);
+        }
+    };
+
+    const curlBaseUrl = `${window.location.origin}/u/${sessionData.connection_id}`;
+    const curlCommands = curlTab === 'unix' ? {
+        text: `curl -d 'your text' ${curlBaseUrl}`,
+        file: `curl -F f=@file.txt ${curlBaseUrl}`,
+    } : {
+        text: `curl.exe -d "your text" ${curlBaseUrl}`,
+        file: `curl.exe -F "f=@file.txt" ${curlBaseUrl}`,
+    };
+
+    const handleCopyCurl = (cmd) => {
+        navigator.clipboard.writeText(cmd);
+        toast.success('Copied');
+    };
+
     return (
         <>
             <div className="menu-overlay" onClick={onClose}/>
@@ -100,6 +130,14 @@ export function Menu({session, users, currentUser, onClose}) {
                             />
                             <span>Allow others to join</span>
                         </label>
+                        <label className="menu-toggle">
+                            <input
+                                type="checkbox"
+                                checked={session?.allow_curl_upload ?? false}
+                                onChange={handleToggleCurl}
+                            />
+                            <span>Curl upload</span>
+                        </label>
                         <button
                             type="button"
                             className="menu-danger"
@@ -107,6 +145,70 @@ export function Menu({session, users, currentUser, onClose}) {
                         >
                             Destroy connection
                         </button>
+                    </section>
+                )}
+
+                {session?.allow_curl_upload && (
+                    <section className="menu-section">
+                        <button
+                            type="button"
+                            className="menu-section-title menu-curl-toggle"
+                            onClick={() => setCurlExpanded(!curlExpanded)}
+                        >
+                            <span>{curlExpanded ? '▾' : '▸'} Curl commands</span>
+                        </button>
+                        {curlExpanded && (
+                            <div className="menu-curl">
+                                <div className="menu-curl-tabs">
+                                    {CURL_TABS.map((tab) => (
+                                        <button
+                                            key={tab.id}
+                                            type="button"
+                                            className={`menu-curl-tab ${curlTab === tab.id ? 'is-active' : ''}`}
+                                            onClick={() => setCurlTab(tab.id)}
+                                        >
+                                            {tab.label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <div className="menu-curl-block">
+                                    <div className="menu-curl-label">Upload text</div>
+                                    <div className="menu-curl-cmd">
+                                        <code>{curlCommands.text}</code>
+                                        <button
+                                            type="button"
+                                            className="menu-curl-copy"
+                                            onClick={() => handleCopyCurl(curlCommands.text)}
+                                            aria-label="Copy text command"
+                                            title="Copy"
+                                        >
+                                            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                <rect x="5" y="5" width="8" height="9" rx="1.5" />
+                                                <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-5A1.5 1.5 0 0 0 3 3.5v7A1.5 1.5 0 0 0 4.5 12H5" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="menu-curl-block">
+                                    <div className="menu-curl-label">Upload file</div>
+                                    <div className="menu-curl-cmd">
+                                        <code>{curlCommands.file}</code>
+                                        <button
+                                            type="button"
+                                            className="menu-curl-copy"
+                                            onClick={() => handleCopyCurl(curlCommands.file)}
+                                            aria-label="Copy file command"
+                                            title="Copy"
+                                        >
+                                            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                <rect x="5" y="5" width="8" height="9" rx="1.5" />
+                                                <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-5A1.5 1.5 0 0 0 3 3.5v7A1.5 1.5 0 0 0 4.5 12H5" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </section>
                 )}
 

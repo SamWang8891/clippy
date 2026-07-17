@@ -279,6 +279,12 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
             <header className="block-head">
                 <span className="block-title" title={title}>{title}</span>
                 <span className="block-meta">
+                    {block.created_by === '__curl__' && (
+                        <>
+                            <span className="block-curl-tag">curl</span>
+                            <span className="block-dot">·</span>
+                        </>
+                    )}
                     {block.type === 'file' && block.size != null && (
                         <>
                             <span>{formatBytes(block.size)}</span>

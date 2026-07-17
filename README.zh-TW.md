@@ -4,7 +4,7 @@
 
 # Clippy
 
-<img src="https://img.shields.io/badge/Version-v1.3.1-green">
+<img src="https://img.shields.io/badge/Version-v1.5.0-green">
 
 一個讓使用者能透過安全、加密的的方式，即時分享文字與檔案的網頁應用程式。
 

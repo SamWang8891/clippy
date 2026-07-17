@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -15,8 +17,9 @@ from typing import Literal
 
 import aiofiles
 import uvicorn
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -51,6 +54,17 @@ MAX_SESSION_BYTES_GIB = float(os.getenv("MAX_SESSION_BYTES_GIB", "5"))
 MAX_SESSION_BYTES = int(MAX_SESSION_BYTES_GIB * 1024 * 1024 * 1024)
 RAW_LINK_CODE_LENGTH = 4
 RAW_LINK_TTL_SECONDS = int(os.getenv("RAW_LINK_TTL_SECONDS", "600"))
+
+KDF_PREFIX = b"clippy-session-v1:"
+ENCRYPTION_IV_LENGTH = 12
+
+
+def server_encrypt(connection_id: str, plaintext: bytes) -> str:
+    """Encrypt using the same AES-256-GCM scheme as the frontend, returning base64."""
+    key = hashlib.sha256(KDF_PREFIX + connection_id.encode()).digest()
+    iv = os.urandom(ENCRYPTION_IV_LENGTH)
+    ciphertext_with_tag = AESGCM(key).encrypt(iv, plaintext, None)
+    return base64.b64encode(iv + ciphertext_with_tag).decode("ascii")
 
 # Initialize FastAPI app
 @asynccontextmanager
@@ -111,7 +125,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
-    version="1.3.1",
+    version="1.5.0",
     openapi_url="/api/v1/openapi.json",
     docs_url="/api/v1/docs",
     lifespan=lifespan,
@@ -165,6 +179,7 @@ class SessionInfo(BaseModel):
     users: list[User]
     blocks: list[Block]
     allow_join: bool
+    allow_curl_upload: bool
     host_id: str
 
 
@@ -209,6 +224,12 @@ class ToggleJoinRequest(BaseModel):
     allow_join: bool
 
 
+class ToggleCurlRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    allow_curl_upload: bool
+
+
 class RawLink(BaseModel):
     code: str
     connection_id: str
@@ -251,6 +272,7 @@ class Session:
         self.block_bytes: dict[str, int] = {}  # block_id -> byte size on disk
         self.total_bytes = 0
         self.allow_join = True
+        self.allow_curl_upload = False
         self.last_activity = datetime.now()
         self.websockets: dict[str, WebSocket] = {}
         # Pending eviction tasks keyed by user_id so reconnects can cancel them.
@@ -365,6 +387,7 @@ class Session:
             "blocks": {bid: b.model_dump() for bid, b in self.blocks.items()},
             "block_bytes": self.block_bytes,
             "allow_join": self.allow_join,
+            "allow_curl_upload": self.allow_curl_upload,
             "last_activity": self.last_activity.isoformat(),
         }
 
@@ -377,6 +400,7 @@ class Session:
         instance.block_bytes = dict(data.get("block_bytes", {}))
         instance.total_bytes = sum(instance.block_bytes.values())
         instance.allow_join = data.get("allow_join", True)
+        instance.allow_curl_upload = data.get("allow_curl_upload", False)
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
         instance.websockets = {}
         instance.pending_disconnects = {}
@@ -779,6 +803,7 @@ async def get_session(connection_id: str, user_id: str):
         users=list(session.users.values()),
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
+        allow_curl_upload=session.allow_curl_upload,
         host_id=next((u.id for u in session.users.values() if u.is_host), ""),
     )
 
@@ -924,6 +949,33 @@ async def toggle_join(request: ToggleJoinRequest):
         "Join permission updated",
         {"success": True}
     )
+
+
+@app.post(
+    "/api/v1/session/toggle_curl",
+    summary="Toggle Curl Upload",
+    description="Enable or disable curl-based uploads to the session (host only)"
+)
+async def toggle_curl(request: ToggleCurlRequest):
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    if request.user_id not in session.users or not session.users[request.user_id].is_host:
+        return api_response(HTTPStatus.FORBIDDEN, "Only host can toggle curl upload")
+
+    session.allow_curl_upload = request.allow_curl_upload
+    session.update_activity()
+
+    await session.broadcast({
+        "type": "curl_permission_changed",
+        "allow_curl_upload": request.allow_curl_upload,
+    })
+
+    return api_response(HTTPStatus.OK, "Curl upload permission updated", {"success": True})
 
 
 @app.post(
@@ -1492,6 +1544,102 @@ async def serve_raw_link(connection_id: str, code: str):
         media_type="application/octet-stream",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.post("/u/{connection_id}")
+async def curl_upload(connection_id: str, request: Request):
+    """Accept text or file uploads via curl.
+
+    Text: ``curl -d 'hello' https://host/u/SESSION_ID``
+    File: ``curl -F f=@file.txt https://host/u/SESSION_ID``
+    """
+    connection_id = connection_id.lower()
+
+    if connection_id not in sessions:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Session not found"})
+
+    session = sessions[connection_id]
+
+    if not session.allow_curl_upload:
+        return JSONResponse(status_code=403, content={"ok": False, "error": "Curl upload is not enabled"})
+
+    content_type = request.headers.get("content-type", "")
+
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        try:
+            upload = form.get("f")
+            if upload is None or not hasattr(upload, "read"):
+                return JSONResponse(status_code=400, content={"ok": False, "error": "Missing file field 'f'"})
+
+            file_bytes = await upload.read()
+
+            if len(file_bytes) > MAX_FILE_SIZE:
+                return JSONResponse(status_code=413, content={"ok": False, "error": "File too large"})
+
+            encrypted_b64 = server_encrypt(connection_id, file_bytes)
+            encrypted_payload = encrypted_b64.encode("utf-8")
+
+            quota_error = session.quota_check(len(encrypted_payload))
+            if quota_error:
+                return JSONResponse(status_code=413, content={"ok": False, "error": quota_error})
+
+            block_id = str(uuid.uuid4())
+            raw_suffix = Path(upload.filename or "").suffix
+            safe_suffix = "".join(c for c in raw_suffix if c.isalnum() or c in "._-")[:32]
+            safe_filename = f"file_{block_id}{safe_suffix}"
+            file_path = session.session_dir / safe_filename
+
+            async with aiofiles.open(file_path, "wb") as f:
+                await f.write(encrypted_payload)
+
+            block = Block(
+                id=block_id,
+                type="file",
+                filename=safe_filename,
+                original_filename=upload.filename or "upload",
+                created_by="__curl__",
+                created_at=datetime.now().isoformat(),
+            )
+            session.add_block(block, byte_size=len(encrypted_payload))
+
+            await session.broadcast({"type": "block_created", "block": block.model_dump()})
+            return JSONResponse(status_code=200, content={"ok": True, "id": block_id})
+        finally:
+            await form.close()
+    else:
+        body = await request.body()
+        if not body or not body.strip():
+            return JSONResponse(status_code=400, content={"ok": False, "error": "Empty body"})
+
+        text = body.decode("utf-8", errors="replace")
+        encrypted_b64 = server_encrypt(connection_id, text.encode("utf-8"))
+
+        content_bytes = len(encrypted_b64.encode("utf-8"))
+        if content_bytes > MAX_TEXT_BLOCK_LENGTH:
+            return JSONResponse(status_code=413, content={"ok": False, "error": "Text too large"})
+
+        quota_error = session.quota_check(content_bytes)
+        if quota_error:
+            return JSONResponse(status_code=413, content={"ok": False, "error": quota_error})
+
+        block_id = str(uuid.uuid4())
+        block = Block(
+            id=block_id,
+            type="text",
+            content=encrypted_b64,
+            created_by="__curl__",
+            created_at=datetime.now().isoformat(),
+        )
+
+        text_file = session.session_dir / f"text_block_{block_id}.txt"
+        async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
+            await f.write(encrypted_b64)
+
+        session.add_block(block, byte_size=content_bytes)
+
+        await session.broadcast({"type": "block_created", "block": block.model_dump()})
+        return JSONResponse(status_code=200, content={"ok": True, "id": block_id})
 
 
 async def _remove_user_after_grace(connection_id: str, user_id: str):
