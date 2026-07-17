@@ -1,6 +1,8 @@
 name: Build and Release Package
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag_name:
