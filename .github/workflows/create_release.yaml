@@ -1,12 +1,8 @@
 name: Build and Release Package
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: "Version to release (e.g., 1.5.1)"
-        required: true
-        type: string
+  push:
+    branches: [main]
 
 jobs:
   build_and_package:
@@ -17,6 +13,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep -Po '(?<=^version = ")[^"]+' backend/pyproject.toml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install and Build Web Frontend
         working-directory: ./frontend
@@ -61,7 +63,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: v${{ inputs.version }}
-          name: Clippy v${{ inputs.version }}
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Clippy v${{ steps.version.outputs.version }}
           files: release.zip
           generate_release_notes: true
