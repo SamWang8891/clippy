@@ -125,7 +125,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
-    version="1.3.1",
+    version="1.5.0",
     openapi_url="/api/v1/openapi.json",
     docs_url="/api/v1/docs",
     lifespan=lifespan,

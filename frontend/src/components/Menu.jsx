@@ -6,7 +6,7 @@ import {useTheme} from '../hooks/useTheme';
 import {destroySession, toggleCurl, toggleJoin, transferHost} from '../utils/api';
 import './Menu.css';
 
-const APP_VERSION = 'v1.3.1';
+const APP_VERSION = 'v1.5.0';
 const GITHUB_URL = 'https://github.com/SamWang8891/clippy';
 
 const THEME_OPTIONS = [
