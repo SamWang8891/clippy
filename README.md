@@ -4,7 +4,7 @@
 
 # Clippy
 
-<img src="https://img.shields.io/badge/Version-v1.5.2-green">
+<img src="https://img.shields.io/badge/Version-v2.0.0-green">
 
 A web-based application that allows users to share text and files in real-time through secure, encrypted sessions.
 
@@ -20,12 +20,9 @@ A web-based application that allows users to share text and files in real-time t
 - [Screenshots 📸](#screenshots-)
 - [Usage 🚀](#usage-)
     - [Installation ⚙️](#installation-)
-    - [Setting the Rate Limit 🕒](#setting-the-rate-limit-)
-    - [Changing the Default Port 🔌](#changing-the-default-port-)
-- [Build It Yourself 🛠](#build-it-yourself-)
-    - [File Structure 🗄](#file-structure-)
-    - [Prerequisites ✅](#prerequisites-)
-    - [Building 🚧](#building-)
+- [Local Development 🛠](#local-development-)
+    - [Running Locally 🚧](#running-locally-)
+    - [Building with Docker 🐳](#building-with-docker-)
 - [Notes 📝](#notes-)
     - [Known Bugs 🐛](#known-bugs-)
 - [Issues / Bugs? 🙋‍♀️](#issues--bugs-)
@@ -40,6 +37,12 @@ Tired of sharing text / files across different computers? Try this clippy!
 - **Encrypted payloads**: Each session uses a 256-bit AES-GCM key derived client-side from the connection ID (SHA-256 KDF). All block content is encrypted before it leaves the browser, so the backend only ever sees ciphertext. The server issues the ID and could derive the key too — this is encrypted-at-rest and on-the-wire, not strict end-to-end against a malicious server
 - **Real-time collaboration**: See blocks appear instantly when other users create them
 - **File uploads**: Support for small file uploads
+- **Curl upload**: Upload text or files from the terminal — host can enable/disable per session
+  ```bash
+  curl -d 'hello' https://your-host/u/SESSION_ID
+  curl -F f=@file.txt https://your-host/u/SESSION_ID
+  ```
+- **Raw links**: Generate public short links to share decrypted text or files with anyone (e.g. `https://your-host/r/SESSION_ID/CODE`)
 - **User management**:
     - Custom or random user names
     - Host can transfer host rights to other users
@@ -61,112 +64,64 @@ Tired of sharing text / files across different computers? Try this clippy!
 
 ### Installation ⚙️
 
-1. Download the release ZIP file from the release page. To build it yourself, please refer
-   to [Build It Yourself](#build-it-yourself-).
-2. Unzip the file.
-3. Run the setup script:
-   ```bash
-   bash setup.sh
+Requires Docker and Docker Compose.
 
-   # If Docker requires root permission
-   sudo bash setup.sh
-   ```
-4. Follow the prompts to enter variables and parameters.
-5. You're all set!
+```bash
+mkdir clippy && cd clippy
+curl -fsSL https://raw.githubusercontent.com/SamWang8891/clippy/main/docker-compose.prod.yaml -o docker-compose.prod.yaml
+curl -fsSL https://raw.githubusercontent.com/SamWang8891/clippy/main/setup.sh -o setup.sh
+bash setup.sh
+```
 
-### Setting the Rate Limit 🕒
+The script will prompt you for the base URL, port, upload size limit, and connection ID length, then start the service.
 
-The rate limit is set in nginx.
-Default setting allows 10 requests per minute.
-You can modify the limit in
-`docker/nginx/nginx.conf`.
-
-### Changing the Default Port 🔌
-
-By default, the web service runs on port 8080. To change it, edit the `.env` file of the project root.
+To build from source instead, see [Local Development](#local-development-).
 
 ---
 
-## Build It Yourself 🛠
-
-### File Structure 🗄
-
-#### Source Code 🧑‍💻
-
-- **Frontend:** Built using Vite, located in the `frontend` folder.
-- **Backend:** Built using Python FastAPI, located in the `backend` folder.
-
-#### Docker 🐳
-
-- `docker/frontend`: Contains built frontend files.
-- `docker/backend`: Contains Python backend files.
-- `docker/nginx`: Contains Nginx `default.conf`.
+## Local Development 🛠
 
 ### Prerequisites ✅
 
-Recommended:
+- Node >= 22.20.0
+- Python >= 3.12
 
-1. Node >= 22.20.0
-2. Python >= 3.12
+### File Structure 🗄
 
-### Building 🚧
+- **Frontend:** Vite + React, in `frontend/`.
+- **Backend:** Python FastAPI, in `backend/`.
 
-#### Frontend 🌐
+### Running Locally 🚧
 
-1. Navigate to the `frontend` folder.
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. (Optional) Modify the code as you wish.
-4. (Optional) Vite can be executed in development mode:
-   ```bash
-   npm run dev
-   ```
-5. Build the frontend:
-   ```bash
-   npm run build
-   ```
-6. Copy the files under `dist` folder to `docker/frontend/`.
+Run the frontend and backend in separate terminals with hot-reload:
 
-#### Backend 👨‍🔧
+```bash
+# Terminal 1: backend
+cd backend
+cp .env.example .env
+pip install -r requirements.txt  # or: uv sync
+python app.py
 
-The FastAPI documentation is in https://example.com/api/v1/docs.
+# Terminal 2: frontend
+cd frontend
+npm install
+npm run dev
+```
 
-The passphrase and salt is stored in the `docker/backend/.env` file.
+Vite's dev server proxies `/api`, `/ws`, and `/r/` to the backend at `localhost:8123`.
 
-If you want to modify the backend, follow these steps. Otherwise, copy the contents of `backend` to `docker/`.
+The FastAPI docs are available at `http://localhost:8123/api/v1/docs`.
 
-1. Navigate to the `backend` folder.
-2. (Optional) Create a virtual environment:
-   By using venv
-    ```bash
-    python -m venv .venv
-    ```
-   OR by using uv
-    ```bash
-    uv venv
-    ```
-3. (Skip if not using a virtual environment) Activate the virtual environment:
-   ```bash
-    source .venv/bin/activate
-    ```
-4. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-   OR by using uv
-    ```bash
-   uv sync
-    ```
-5. Modify the code as you wish.
-6. Run the backend in development mode:
-   ```bash
-   python app.py
-   ```
-7. Copy the files under `backend` folder to `docker/backend/`.
+Note: you may want to set `ALLOWED_ORIGINS=*` in `backend/.env` during development.
 
-Note that you might want to change `ALLOWED_ORIGINS` of python .env to `*` when developing.
+### Building with Docker 🐳
+
+To build and run the full Docker image locally:
+
+```bash
+docker build -t clippy .
+docker run -p 8080:80 --env-file backend/.env clippy
+```
 
 ---
 
@@ -180,5 +135,4 @@ Note that you might want to change `ALLOWED_ORIGINS` of python .env to `*` when 
 
 ## Issues / Bugs? 🙋‍♀️
 
-Encounter issues or bugs? Feel free to report them in Issues and submit Pull Requests, please open an issue before
-typing to do pr.
+Encounter issues or bugs? Feel free to report them in Issues and submit Pull Requests. For PR, please target dev branch.

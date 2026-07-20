@@ -1,123 +1,69 @@
 #!/bin/bash
 set -euo pipefail
 
-# Check current directory
-if [ ! -f "docker/frontend/index.html" ] || [ ! -f "docker/backend/app.py" ]; then
-    echo "Required files not in docker/, please download the release.zip from the GitHub release page or build it yourself."
-    echo "Please refer to README.md for more info."
-    exit 1
-fi
-
-
-# Check if docker is installed
-if ! command -v docker &> /dev/null
-then
-    echo -e "\nDocker not found on your system, or it just simply lacks the sudo power."
-    echo "Please install docker."
-    exit 1
-fi
-
-
-# Check if existing service is already installed on docker
-if [ "$(docker ps -aq -f name=clippy)" ]; then
-    echo ""
-    read -r -p "There is an existing one, do you want to reinstall and reconfigure it? (yes/no): " confirm
-    if [ "$confirm" == "yes" ]; then
-        echo -e "\nStopping, please wait patiently..."
-        docker stop clippy-nginx || true
-        docker stop clippy-python || true
-        docker rm clippy-nginx || true
-        docker rm clippy-python || true
-    else
-        echo -e "Exiting...\n"
+# Check if docker + compose are available
+for cmd in docker "docker compose"; do
+    if ! command -v ${cmd%% *} &> /dev/null; then
+        echo "$cmd not found. Please install Docker."
         exit 1
     fi
+done
+
+# Handle existing installation
+if [ "$(docker ps -aq -f name=clippy)" ]; then
+    echo ""
+    read -r -p "Existing Clippy found. Reinstall? (yes/no): " confirm
+    if [ "$confirm" != "yes" ]; then
+        echo "Exiting..."
+        exit 1
+    fi
+    echo "Stopping existing containers..."
+    docker compose -f docker-compose.prod.yaml down 2>/dev/null || true
 fi
 
+# Get base URL
+echo ""
+echo "Enter the base URL for your Clippy installation."
+echo "Include protocol and port if non-standard (e.g. http://localhost:8080, https://clippy.example.com)"
+echo ""
+read -r -p "Base URL: " baseurl
 
-# Check if docker compose is installed
-if ! command -v docker compose &> /dev/null
-then
-    echo -e "\nDocker compose not found on your system."
-    echo "Please install docker compose."
-    exit 1
-fi
+# Get expose port
+echo ""
+read -r -p "Port to expose (default 8080): " expose_port
+expose_port=${expose_port:-8080}
 
+# Get max upload size
+echo ""
+echo "Max file upload size in GiB (default 1)."
+read -r -p "Max file size (GiB): " maxfilesize
+maxfilesize=${maxfilesize:-1}
 
-# Get base URL from user
-echo -e "\nPlease enter the base URL for your Clippy installation."
-echo -e "This should include the protocol (http:// or https://) and port number if not using standard ports (80/443)."
-echo -e "Examples: http://localhost:8080, https://clippy.example.com"
-echo -e "If using a reverse proxy, enter the public-facing URL.\n"
-read -r -p "Please enter base URL: " baseurl
+# Get connection ID length
+echo ""
+echo "Connection ID length (default 6, recommended 4-6)."
+read -r -p "ID length: " idlength
+idlength=${idlength:-6}
 
-# Update ALLOWED_ORIGINS in docker/backend/.env
-# `sed -i` differs between BSD (macOS) and GNU (Linux); use a temp-file rewrite
-# so we don't leave .bak files behind on either platform.
-update_in_place() {
-    local file=$1
-    local expr=$2
-    local tmp
-    tmp=$(mktemp "${file}.XXXXXX")
-    sed "$expr" "$file" > "$tmp"
-    mv "$tmp" "$file"
-}
-
-update_in_place docker/backend/.env "s|ALLOWED_ORIGINS=.*|ALLOWED_ORIGINS=${baseurl}|g"
-
-# Write the backend URL into the frontend's runtime config (JSON, not YAML).
-cat > docker/frontend/config.json <<EOF
-{
-  "url": "${baseurl}"
-}
+# Write config.json for frontend
+cat > config.json <<EOF
+{"url": "${baseurl}"}
 EOF
 
-# Get docker expose port from user
-echo -e "\nPlease enter the port number you want to expose the service on."
-read -r -p "Please enter port number: " exporse_port
+# Write .env
+cat > .env <<EOF
+WEB_PORT=${expose_port}
+ENCRYPTION_PASSPHRASE=$(head -c 32 /dev/urandom | base64)
+ENCRYPTION_SALT=$(head -c 16 /dev/urandom | base64)
+MAX_UPLOAD_SIZE_GIB=${maxfilesize}
+SESSION_TIMEOUT_SECONDS=3600
+CONNECTION_ID_LENGTH=${idlength}
+ALLOWED_ORIGINS=${baseurl}
+EOF
+chmod 600 .env
 
-# Update .env
-update_in_place .env "s|WEB_PORT=.*|WEB_PORT=${exporse_port}|g"
+# Start
+docker compose -f docker-compose.prod.yaml up -d
 
-# Get maximum file upload size from user
-echo -e "\nPlease enter the maximum file upload size in GiB (Gibibytes)."
-echo -e "Note: Some reverse proxies (e.g., Cloudflare) may impose their own file size limits."
-echo -e "1 GiB = 1024 MiB. Recommended: 1-5 GiB\n"
-read -r -p "Please enter max file size (GiB): " maxfilesize
-
-# Update MAX_UPLOAD_SIZE_GIB in docker/backend/.env
-update_in_place docker/backend/.env "s|MAX_UPLOAD_SIZE_GIB=.*|MAX_UPLOAD_SIZE_GIB=${maxfilesize}|g"
-
-
-# Get the connection id length from user
-echo -e "\nPlease enter the connection ID length."
-echo -e "Note: User will NOT be able to create new connection when all id is taken at the moment."
-echo -e "Recommended: 4-6\n"
-read -r -p "Please enter the connection ID length: " idlength
-
-# Update CONNECTION_ID_LENGTH in docker/backend/.env
-update_in_place docker/backend/.env "s|CONNECTION_ID_LENGTH=.*|CONNECTION_ID_LENGTH=${idlength}|g"
-
-
-# Encryption keys are generated client-side per session and shared via the URL
-# fragment, so the server holds no encryption secret and none is configured here.
-
-# Backend runs as root in-container, so 750/640 still lets it read/write while
-# blocking other host users from the .env. Nginx's worker runs as the non-root
-# `nginx` user on Linux bind mounts, so the frontend assets and nginx config
-# must be world-readable or the worker gets EACCES on index.html.
-find docker/backend -type d -exec chmod 750 {} +
-find docker/backend -type f -exec chmod 640 {} +
-chmod 600 docker/backend/.env
-find docker/frontend -type d -exec chmod 755 {} +
-find docker/frontend -type f -exec chmod 644 {} +
-chmod 755 docker/nginx
-chmod 644 docker/nginx/default.conf
-
-
-# Docker compose up
-docker compose up --build -d
-
-
-# Finished message
-echo -e "\nInstallation finished!"
+echo ""
+echo "Clippy is running at ${baseurl}"

@@ -1,0 +1,21 @@
+name: clippy
+services:
+  clippy:
+    image: ghcr.io/samwang8891/clippy:latest
+    container_name: clippy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    volumes:
+      - clippy-data:/app/data
+      - ./config.json:/web/config.json:ro
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8123/api/v1/config')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  clippy-data:
