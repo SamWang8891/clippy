@@ -274,7 +274,7 @@ class Session:
         self.allow_join = True
         self.allow_curl_upload = False
         self.last_activity = datetime.now()
-        self.websockets: dict[str, WebSocket] = {}
+        self.websockets: dict[str, set[WebSocket]] = {}
         # Pending eviction tasks keyed by user_id so reconnects can cancel them.
         self.pending_disconnects: dict[str, asyncio.Task] = {}
         self.session_dir = UPLOAD_DIR / connection_id
@@ -324,11 +324,10 @@ class Session:
         return user
 
     def remove_user(self, user_id: str):
-        """Remove a user and their WebSocket connection from the session."""
+        """Remove a user and their WebSocket connections from the session."""
         if user_id in self.users:
             del self.users[user_id]
-        if user_id in self.websockets:
-            del self.websockets[user_id]
+        self.websockets.pop(user_id, None)
         pending = self.pending_disconnects.pop(user_id, None)
         if pending is not None and not pending.done():
             pending.cancel()
@@ -371,13 +370,14 @@ class Session:
             message: Dictionary to send as JSON
             exclude_user: Optional user_id to exclude from broadcast
         """
-        for user_id, ws in list(self.websockets.items()):
+        for user_id, sockets in list(self.websockets.items()):
             if exclude_user and user_id == exclude_user:
                 continue
-            try:
-                await ws.send_json(message)
-            except Exception:  # noqa: BLE001 — broadcasts must keep going if one socket dies.
-                pass
+            for ws in list(sockets):
+                try:
+                    await ws.send_json(message)
+                except Exception:  # noqa: BLE001 — broadcasts must keep going if one socket dies.
+                    sockets.discard(ws)
 
     def to_dict(self) -> dict:
         """Serialize persistable session state. Sockets and tasks are runtime-only."""
@@ -605,11 +605,12 @@ async def _teardown_session(connection_id: str, reason: str):
 
     await session.broadcast({"type": "session_destroyed", "reason": reason})
 
-    for ws in list(session.websockets.values()):
-        try:
-            await ws.close()
-        except Exception:  # noqa: BLE001 — WebSocket may already be closed; nothing actionable.
-            pass
+    for sockets in list(session.websockets.values()):
+        for ws in list(sockets):
+            try:
+                await ws.close()
+            except Exception:  # noqa: BLE001 — WebSocket may already be closed; nothing actionable.
+                pass
     session.websockets.clear()
 
     if session.session_dir.exists():
@@ -1658,7 +1659,7 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
     if session is None:
         return
     user = session.users.get(user_id)
-    if user is None or user_id in session.websockets:
+    if user is None or session.websockets.get(user_id):
         return
 
     was_host = user.is_host
@@ -1696,7 +1697,7 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: 
     if pending is not None:
         pending.cancel()
 
-    session.websockets[user_id] = websocket
+    session.websockets.setdefault(user_id, set()).add(websocket)
     session.update_activity()
 
     try:
@@ -1714,11 +1715,12 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: 
     except Exception as e:  # noqa: BLE001 — log and clean up regardless of cause.
         logger.warning("WebSocket error: %s", e)
     finally:
-        # Only drop the websocket reference if it still points at this connection.
-        # A reconnect may have already replaced it during the disconnect handling.
-        if session.websockets.get(user_id) is websocket:
-            del session.websockets[user_id]
-        if connection_id in sessions and user_id in session.users:
+        sockets = session.websockets.get(user_id)
+        if sockets is not None:
+            sockets.discard(websocket)
+            if not sockets:
+                del session.websockets[user_id]
+        if connection_id in sessions and user_id in session.users and not session.websockets.get(user_id):
             session.pending_disconnects[user_id] = asyncio.create_task(
                 _remove_user_after_grace(connection_id, user_id)
             )
