@@ -55,7 +55,7 @@ MAX_SESSION_BYTES = int(MAX_SESSION_BYTES_GIB * 1024 * 1024 * 1024)
 RAW_LINK_CODE_LENGTH = 4
 RAW_LINK_TTL_SECONDS = int(os.getenv("RAW_LINK_TTL_SECONDS", "600"))
 
-KDF_PREFIX = b"clippy-session-v1:"
+KDF_PREFIX = b"clippy-session-v2:"
 ENCRYPTION_IV_LENGTH = 12
 
 
@@ -126,8 +126,8 @@ app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
     version="2.0.0",
-    openapi_url="/api/v1/openapi.json",
-    docs_url="/api/v1/docs",
+    openapi_url="/api/v2/openapi.json",
+    docs_url="/api/v2/docs",
     lifespan=lifespan,
 )
 
@@ -646,7 +646,7 @@ async def cleanup_expired_sessions():
 
 
 @app.get(
-    "/api/v1/config",
+    "/api/v2/config",
     summary="Get Configuration",
     description="Retrieve client configuration (file size limits)."
 )
@@ -665,7 +665,7 @@ async def get_config():
 
 
 @app.get(
-    "/api/v1/session/id-length",
+    "/api/v2/session/id-length",
     summary="Get Connection ID Length",
     description="Retrieve the configured connection ID length"
 )
@@ -686,7 +686,7 @@ async def get_connection_id_length():
 
 
 @app.post(
-    "/api/v1/session/create",
+    "/api/v2/session/create",
     summary="Create New Session",
     description="Create a new collaborative session and become the host"
 )
@@ -727,7 +727,7 @@ async def create_session(request: CreateSessionRequest):
 
 
 @app.post(
-    "/api/v1/session/join",
+    "/api/v2/session/join",
     summary="Join Existing Session",
     description="Join an existing session using a session ID"
 )
@@ -781,7 +781,7 @@ async def join_session(request: JoinSessionRequest):
 
 
 @app.get(
-    "/api/v1/session/{connection_id}",
+    "/api/v2/session/{connection_id}",
     summary="Get Session Details",
     description="Retrieve complete session information including users and blocks"
 )
@@ -815,7 +815,7 @@ async def get_session(connection_id: str, user_id: str):
 
 
 @app.post(
-    "/api/v1/session/destroy",
+    "/api/v2/session/destroy",
     summary="Destroy Session",
     description="Permanently delete a session and all its data (host only)"
 )
@@ -856,7 +856,7 @@ async def destroy_session(connection_id: str, user_id: str):
 
 
 @app.post(
-    "/api/v1/session/transfer_host",
+    "/api/v2/session/transfer_host",
     summary="Transfer Host Rights",
     description="Transfer host privileges to another user in the session"
 )
@@ -907,7 +907,7 @@ async def transfer_host(request: TransferHostRequest):
 
 
 @app.post(
-    "/api/v1/session/toggle_join",
+    "/api/v2/session/toggle_join",
     summary="Toggle Join Permission",
     description="Enable or disable new users from joining the session (host only)"
 )
@@ -952,7 +952,7 @@ async def toggle_join(request: ToggleJoinRequest):
 
 
 @app.post(
-    "/api/v1/session/toggle_curl",
+    "/api/v2/session/toggle_curl",
     summary="Toggle Curl Upload",
     description="Enable or disable curl-based uploads to the session (host only)"
 )
@@ -979,7 +979,7 @@ async def toggle_curl(request: ToggleCurlRequest):
 
 
 @app.post(
-    "/api/v1/block/create",
+    "/api/v2/block/create",
     summary="Create Text Block",
     description="Create a new text block in the session"
 )
@@ -1036,7 +1036,7 @@ async def create_text_block(request: CreateBlockRequest):
 
 
 @app.post(
-    "/api/v1/block/upload",
+    "/api/v2/block/upload",
     summary="Upload File Block",
     description="Upload a file to the session (encrypted)"
 )
@@ -1133,7 +1133,7 @@ async def upload_file_block(
 
 
 @app.patch(
-    "/api/v1/block/update",
+    "/api/v2/block/update",
     summary="Update Text Block",
     description="Replace the content of an existing text block"
 )
@@ -1192,7 +1192,7 @@ async def update_text_block(request: UpdateTextBlockRequest):
 
 
 @app.post(
-    "/api/v1/block/replace",
+    "/api/v2/block/replace",
     summary="Replace File Block",
     description="Upload a new file to replace the contents of an existing file block"
 )
@@ -1295,7 +1295,7 @@ async def replace_file_block(
 
 
 @app.delete(
-    "/api/v1/block/delete",
+    "/api/v2/block/delete",
     summary="Delete Block",
     description="Delete a text or file block from the session"
 )
@@ -1344,7 +1344,7 @@ async def delete_block(request: DeleteBlockRequest):
 
 
 @app.get(
-    "/api/v1/block/download/{connection_id}/{block_id}",
+    "/api/v2/block/download/{connection_id}/{block_id}",
     summary="Download Block",
     description="Download a text or file block (encrypted)"
 )
@@ -1400,7 +1400,7 @@ async def download_block(connection_id: str, block_id: str, user_id: str):
 
 
 @app.post(
-    "/api/v1/raw/text",
+    "/api/v2/raw/text",
     summary="Create Raw Text Link",
     description="Generate a public short link that serves the decrypted text"
 )
@@ -1441,7 +1441,7 @@ async def create_raw_text_link(request: CreateRawTextRequest):
 
 
 @app.post(
-    "/api/v1/raw/file",
+    "/api/v2/raw/file",
     summary="Create Raw File Link",
     description="Generate a public short link that serves the decrypted file"
 )

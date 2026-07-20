@@ -10,7 +10,7 @@ import {encrypt} from './encryption';
 import {getBackendUrl} from './config';
 
 function getApiBase() {
-    return `${getBackendUrl()}/api/v1`;
+    return `${getBackendUrl()}/api/v2`;
 }
 
 async function handleApiResponse(response) {

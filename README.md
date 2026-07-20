@@ -110,7 +110,7 @@ npm run dev
 
 Vite's dev server proxies `/api`, `/ws`, and `/r/` to the backend at `localhost:8123`.
 
-The FastAPI docs are available at `http://localhost:8123/api/v1/docs`.
+The FastAPI docs are available at `http://localhost:8123/api/v2/docs`.
 
 Note: you may want to set `ALLOWED_ORIGINS=*` in `backend/.env` during development.
 

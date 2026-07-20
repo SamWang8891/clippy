@@ -110,7 +110,7 @@ npm run dev
 
 Vite 開發伺服器會自動將 `/api`、`/ws` 和 `/r/` 代理到後端 `localhost:8123`。
 
-FastAPI 說明文件位於 `http://localhost:8123/api/v1/docs`。
+FastAPI 說明文件位於 `http://localhost:8123/api/v2/docs`。
 
 注意：開發時您可能需要在 `backend/.env` 中設定 `ALLOWED_ORIGINS=*`。
 
