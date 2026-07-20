@@ -1,5 +1,7 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import hljs from 'highlight.js/lib/common';
+import powershell from 'highlight.js/lib/languages/powershell';
+hljs.registerLanguage('powershell', powershell);
 import {useToast} from '../context/ToastContext';
 import {decrypt, decryptToBytes} from '../utils/encryption';
 import {getDownloadUrl, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';

@@ -181,12 +181,18 @@
     font-family: var(--font-mono);
     font-size: 15px;
     color: var(--fg-muted);
-    background: transparent;
+    background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: 4px;
     padding: 9px 14px;
     cursor: pointer;
     margin-left: auto;
+    color-scheme: light dark;
+}
+
+.block-edit-lang option {
+    background: var(--bg-elev);
+    color: var(--fg);
 }
 
 .block-edit-frame {
