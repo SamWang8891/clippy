@@ -3,6 +3,10 @@ name: Publish Docker Image
 on:
   push:
     branches: [main]
+  # Lets a branch be built and published for testing before it reaches main.
+  # Manual runs publish a branch-named tag only — never :latest — and skip the
+  # deploy job entirely.
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -16,11 +20,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Get version
+      - name: Compute version and tags
         id: version
         run: |
+          set -euo pipefail
           VERSION=$(grep -Po '(?<=^version = ")[^"]+' backend/pyproject.toml)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # ${VAR,,} lowercases: GITHUB_REPOSITORY keeps the owner's original
+          # casing (SamWang8891/clippy), and Docker rejects any reference whose
+          # repository name is not lowercase with "invalid reference format".
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo 'tags<<TAGS'
+            if [ "$GITHUB_REF_NAME" = "main" ]; then
+              echo "$IMAGE:latest"
+              echo "$IMAGE:v$VERSION"
+            else
+              echo "$IMAGE:${GITHUB_REF_NAME//\//-}"
+            fi
+            echo TAGS
+          } >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -34,14 +54,14 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:v${{ steps.version.outputs.version }}
+          tags: ${{ steps.version.outputs.tags }}
 
   deploy:
     needs: publish
     runs-on: ubuntu-latest
-    if: success()
+    # Only main deploys. A manual run on a branch publishes an image for testing
+    # and stops there; point the test stack at that tag with clippy:imageTag.
+    if: github.ref == 'refs/heads/main'
     # id-token is required to mint the OIDC assertion; nothing else is needed.
     # Previously unset, so this job inherited the repository default, which on
     # older repos is read-write-all.

@@ -68,9 +68,16 @@ Permissions: `contents: write`, to create the release.
 
 Two jobs; `deploy` runs only if `publish` succeeded.
 
-**`publish`** — logs in to GHCR with the automatic `GITHUB_TOKEN` and pushes two
-tags, `:latest` and the immutable `:v<version>`. Exports `version` as a job
-output for `deploy`.
+**`publish`** — logs in to GHCR with the automatic `GITHUB_TOKEN` and pushes.
+On `main` that is `:latest` plus the immutable `:v<version>`; on a manual
+`workflow_dispatch` run it is a single branch-named tag (see
+[Testing a branch](#testing-a-branch-before-it-reaches-main)). Exports `version`
+as a job output for `deploy`.
+
+The image name is lowercased with `${GITHUB_REPOSITORY,,}`. `github.repository`
+preserves the owner's original casing (`SamWang8891/clippy`), and Docker rejects
+any reference whose repository name is not lowercase — so interpolating it
+directly fails the push with `invalid reference format`.
 
 **`deploy`** — assumes an AWS role via OIDC, sends one SSM command that writes
 `CLIPPY_TAG=v<version>` into `/opt/clippy/.env` and runs
@@ -120,6 +127,32 @@ feature branch presents a different `sub` claim and is rejected by STS.
 Both secrets must exist **before this workflow first lands on `main`**, since
 that same push is what runs it. Until then the deploy job has nothing to
 authenticate with and will fail at the credentials step.
+
+### Testing a branch before it reaches main
+
+`push: [main]` means a branch never produces an image. To build one without
+merging, trigger the workflow by hand:
+
+```sh
+gh workflow run docker_publish.yaml --ref dev
+```
+
+or Actions → *Publish Docker Image* → **Run workflow** → branch `dev`.
+
+A manual run publishes `ghcr.io/samwang8891/clippy:dev` **only** — it never
+moves `:latest`, and the `deploy` job is gated on `github.ref == refs/heads/main`
+so it does not run at all. Nothing touches a live deployment.
+
+Point a stack at that tag with `npx cdk deploy -c clippy:imageTag=dev`; see
+`clippy-infra/README.md`.
+
+### The package must be public
+
+Neither the EC2 `user-data.sh` nor the self-hoster `setup.sh` does a
+`docker login`, so `ghcr.io/samwang8891/clippy` has to be a **public** package or
+every `docker compose pull` fails. GHCR creates new packages as private, so this
+needs setting once after the first publish: Packages → clippy → Package settings
+→ Change visibility → Public.
 
 ### Hardcoded values
 
