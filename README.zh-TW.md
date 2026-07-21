@@ -4,7 +4,7 @@
 
 # Clippy
 
-<img src="https://img.shields.io/badge/Version-v1.5.2-green">
+<img src="https://img.shields.io/badge/Version-v2.0.0-green">
 
 一個讓使用者能透過安全、加密的的方式，即時分享文字與檔案的網頁應用程式。
 
@@ -20,13 +20,9 @@
 - [截圖 📸](#截圖-)
 - [用法 🚀](#用法-)
     - [安裝 ⚙️](#安裝-)
-    - [設定速率限制 🕒](#設定速率限制-)
-    - [修改預設連接埠 🔌](#修改預設連接埠-)
-- [自己建構 🛠](#自己建構-)
-    - [檔案結構 🗄](#檔案結構-)
-    - [原始碼 ✅](#原始碼-)
-    - [建構 🚧](#建構-)
-- [鳴謝 🙏](#鳴謝-)
+- [本地開發 🛠](#本地開發-)
+    - [本地執行 🚧](#本地執行-)
+    - [使用 Docker 建構 🐳](#使用-docker-建構-)
 - [備註 📝](#備註-)
     - [已知的bug 🐛](#已知的bug-)
 - [問題 / Bugs? 🙋‍♀️](#問題--bugs-)
@@ -41,6 +37,12 @@
 - **加密傳輸**：每個連線階段使用一把由連線 ID 透過 SHA-256 衍生的 256 位元 AES-GCM 金鑰，所有文字與檔案在離開瀏覽器前皆會在用戶端加密；伺服器僅儲存密文（伺服器同時持有 ID，因此並非嚴格的端對端加密）。
 - **即時協作**：當其他使用者建立區塊時，您能立即看到它們出現。
 - **檔案上傳**：支援小檔案上傳。
+- **Curl 上傳**：透過終端機上傳文字或檔案，主持人可針對每個連線啟用/停用此功能。
+  ```bash
+  curl -d 'hello' https://your-host/u/SESSION_ID
+  curl -F f=@file.txt https://your-host/u/SESSION_ID
+  ```
+- **Raw 連結**：產生公開短連結，與任何人分享解密後的文字或檔案（例如 `https://your-host/r/SESSION_ID/CODE`）
 - **使用者管理**：
     - 自訂或隨機使用者名稱
     - 主持人 (Host) 可轉移權限給其他使用者
@@ -62,107 +64,64 @@
 
 ### 安裝 ⚙️
 
-1. 從 Release 頁面下載 ZIP 壓縮檔。若要自行建構，請參考 [自己建構](#自己建構-)。
-2. 解壓縮檔案。
-3. 執行安裝腳本：
-   ```bash
-   bash setup.sh
+需要 Docker 和 Docker Compose。
 
-   # 如果 Docker 需要 root 權限
-   sudo bash setup.sh
-   ```
-4. 按照提示輸入變數與參數。
-5. 大功告成！
+```bash
+mkdir clippy && cd clippy
+curl -fsSL https://raw.githubusercontent.com/SamWang8891/clippy/main/docker-compose.prod.yaml -o docker-compose.prod.yaml
+curl -fsSL https://raw.githubusercontent.com/SamWang8891/clippy/main/setup.sh -o setup.sh
+bash setup.sh
+```
 
-### 設定速率限制 🕒
+腳本會引導你設定 URL、連接埠、上傳大小限制和連線 ID 長度，然後啟動服務。
 
-速率限制設定在 nginx。預設允許每分鐘 10 次請求。可以在 `docker/nginx/nginx.conf` 中修改限制。
-
-### 修改預設連接埠 🔌
-
-網頁預設執行在連結埠 8080。如要更改，請編輯位於專案根目錄的 `.env` 檔案。
+若要從原始碼建構，請參考 [本地開發](#本地開發-)。
 
 ---
 
-## 自己建構 🛠
-
-### 檔案結構 🗄
-
-#### 原始碼 🧑‍💻
-
-- **前端:** 使用Vite，在 `frontend` 資料夾中。
-- **後端:** 使用Python的FastAPI，在 `backend` 資料夾中。
-
-#### Docker 🐳
-
-- `docker/web`：包含建構完的前端檔案。
-- `docker/backend`：包含Python所寫的後端檔案。
-- `docker/nginx`：包含 Nginx `default.conf` 檔案。
+## 本地開發 🛠
 
 ### 事前準備 ✅
 
-建議：
+- Node >= 22.20.0
+- Python >= 3.12
 
-1. Node >= 22.20.0
-2. Python >= 3.12
+### 檔案結構 🗄
 
-### 建構 🚧
+- **前端:** Vite + React，位於 `frontend/`。
+- **後端:** Python FastAPI，位於 `backend/`。
 
-#### 前端 🌐
+### 本地執行 🚧
 
-1. 移至 `frontend` 資料夾.
-2. 安裝依賴
-   ```bash
-   npm install
-   ```
-3. (可選) 更動程式碼。
-4. (可選) Vite 開發時可使用以下指令執行：
-   ```bash
-   npm run dev
-   ```
-5. 建構前端：
-   ```bash
-   npm run build
-   ```
-6. 將 `dist` 資料夾底下的檔案複製到 `docker/frontend/`。
+在兩個終端機分別執行前端和後端，支援即時重載：
 
-#### 後端 👨‍🔧
+```bash
+# 終端機 1：後端
+cd backend
+cp .env.example .env
+pip install -r requirements.txt  # 或：uv sync
+python app.py
 
-FastAPI 說明文件在 https://example.com/api/v1/docs。
+# 終端機 2：前端
+cd frontend
+npm install
+npm run dev
+```
 
-Passphrase 和 salt 儲存於 docker/backend/.env 檔案中。
+Vite 開發伺服器會自動將 `/api`、`/ws` 和 `/r/` 代理到後端 `localhost:8123`。
 
-若您想修改後端，請依照以下步驟。否則，直接將 `backend/` 資料夾底下的的內容複製到 `docker/` 即可。
+FastAPI 說明文件位於 `http://localhost:8123/api/v2/docs`。
 
-1. 移至 `backend` 資料夾。
-2. (可選) 建立虛擬環境：
-   ```bash
-   python -m venv .venv
-   ```
-   OR 使用 uv
-    ```bash
-    uv venv
-    ```
-3. (如果沒有使用虛擬環境請跳過) 啟用虛擬環境：
-   ```bash
-    source .venv/bin/activate
-    ```
-4. 安裝依賴：
-   ```bash
-   pip install -r requirements.txt
-   ```
-   OR 使用 uv
-    ```bash
-   uv sync
-    ```
-5. 更改程式碼。
-6. 在開發模式執行：
-   ```bash
-   python app.py
-   ```
-7. 將 `backend` 資料夾底下的檔案複製到 `docker/backend/`。
+注意：開發時您可能需要在 `backend/.env` 中設定 `ALLOWED_ORIGINS=*`。
 
-注意：開發時您可能需要將 python .env 中的 ALLOWED_ORIGINS 更改為 *。
+### 使用 Docker 建構 🐳
+
+在本地建構並執行完整的 Docker 映像：
+
+```bash
+docker build -t clippy .
+docker run -p 8080:80 --env-file backend/.env clippy
+```
 
 ---
 
@@ -176,4 +135,4 @@ Passphrase 和 salt 儲存於 docker/backend/.env 檔案中。
 
 ## 問題 / Bugs? 🙋‍♀️
 
-遇到問題或 Bug 嗎？歡迎在 Issues 回報並提交 Pull Requests，但在開始寫 PR 之前，請先開啟一個 Issue 進行討論。
+遇到問題或 Bug 嗎？歡迎在 Issues 回報並提交 Pull Requests，但在開始寫 PR 之前，請先開啟一個 Issue 進行討論。如要 PR，請設定目標為 dev 分支。

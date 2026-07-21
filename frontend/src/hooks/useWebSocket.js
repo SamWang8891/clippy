@@ -9,7 +9,7 @@ const RECONNECT_MAX_MS = 30000;
 // caller can reset state instead of looping forever.
 const UNOPENED_CLOSE_LIMIT = 5;
 
-export function useWebSocket(sessionId, userId, onMessage, onAuthRejected) {
+export function useWebSocket(sessionId, userId, onMessage, onAuthRejected, onResync) {
     const [isConnected, setIsConnected] = useState(false);
     const wsRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
@@ -17,6 +17,7 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected) {
     // Latest handlers in refs so changing them does not tear down the socket.
     const onMessageRef = useRef(onMessage);
     const onAuthRejectedRef = useRef(onAuthRejected);
+    const onResyncRef = useRef(onResync);
 
     useEffect(() => {
         onMessageRef.current = onMessage;
@@ -25,6 +26,10 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected) {
     useEffect(() => {
         onAuthRejectedRef.current = onAuthRejected;
     }, [onAuthRejected]);
+
+    useEffect(() => {
+        onResyncRef.current = onResync;
+    }, [onResync]);
 
     useEffect(() => {
         if (!sessionId || !userId) return;
@@ -50,16 +55,22 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected) {
 
             const apiUrl = getBackendUrl();
             const wsUrl = apiUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
-            const fullWsUrl = `${wsUrl}/ws/${sessionId}/${userId}`;
+            const fullWsUrl = `${wsUrl}/ws/${sessionId}`;
 
-            console.log('Connecting to WebSocket:', fullWsUrl);
-            wsRef.current = new WebSocket(fullWsUrl);
+            // The member token goes in the subprotocol, not the path: browsers
+            // can't set headers on a WS handshake, and a token in the URL lands
+            // in every proxy access log. The server echoes it back on accept.
+            wsRef.current = new WebSocket(fullWsUrl, [userId]);
 
             wsRef.current.onopen = () => {
+                const reconnected = attempt > 0;
                 attempt = 0;
                 openedThisAttempt = true;
                 unopenedCloses = 0;
                 setIsConnected(true);
+                // Events published while the socket was down are gone for good,
+                // so a reconnect has to re-read state rather than assume none.
+                if (reconnected) onResyncRef.current?.();
 
                 pingIntervalRef.current = setInterval(() => {
                     if (wsRef.current?.readyState === WebSocket.OPEN) {

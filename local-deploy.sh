@@ -1,9 +1,6 @@
 #!/bin/bash
-# Local equivalent of .github/workflows/create_release.yaml steps 2-6:
-# builds the frontend and populates docker/ so `docker compose up` can run
-# against the same layout that the release ZIP ships.
-#
-# Does NOT run step 7+ (wiping source dirs, zipping, publishing a release).
+# Build from source and run locally using the dev docker-compose.yaml.
+# For production (prebuilt image), use setup.sh instead.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,33 +12,28 @@ if [ ! -d "frontend" ] || [ ! -d "backend" ] || [ ! -d "docker" ]; then
     exit 1
 fi
 
-# Step 2: Install and build web frontend
-echo "==> Building web frontend"
-(
-    cd frontend
-    npm install
-    npm run build
-)
+echo "==> Building frontend"
+(cd frontend && npm install && npm run build)
 
-# Step 3: Prepare docker directories with clean templates
-echo "==> Resetting docker/backend and docker/frontend (keeping .gitkeep)"
+echo "==> Preparing docker/ directories"
 find docker/backend -mindepth 1 ! -name '.gitkeep' -delete
 find docker/frontend -mindepth 1 ! -name '.gitkeep' -delete
 
-echo "==> Copying .env and config templates"
 cp backend/.env.example docker/backend/.env
 cp .env.example .env
-cp frontend/public/config.example.yaml docker/frontend/config.yaml
+# The frontend fetches /config.json and parses it as JSON (see
+# frontend/src/utils/config.js). Writing the YAML example here meant the fetch
+# always failed and the dev build silently fell back to the built-in default.
+printf '{"url": "http://localhost:%s"}\n' "${WEB_PORT:-8080}" > docker/frontend/config.json
 
-# Step 4: Copy built frontend to docker/frontend
-echo "==> Copying frontend build output"
+echo "==> Copying build artifacts"
 cp -r frontend/dist/. docker/frontend/
-
-# Step 5: Copy backend files to docker/backend
-echo "==> Copying backend sources"
 cp backend/app.py docker/backend/
 cp backend/requirements.txt docker/backend/
 mkdir -p docker/backend/uploads
 
-echo
-echo "docker/ is ready. Next: run ./setup.sh to configure and start the stack."
+echo "==> Starting with docker compose"
+docker compose up --build -d
+
+echo ""
+echo "Dev server running at http://localhost:${WEB_PORT:-8080}"

@@ -6,7 +6,7 @@ import {useTheme} from '../hooks/useTheme';
 import {destroySession, toggleCurl, toggleJoin, transferHost} from '../utils/api';
 import './Menu.css';
 
-const APP_VERSION = 'v1.5.2';
+const APP_VERSION = 'v2.0.0';
 const GITHUB_URL = 'https://github.com/SamWang8891/clippy';
 
 const THEME_OPTIONS = [
@@ -220,11 +220,11 @@ export function Menu({session, users, currentUser, onClose}) {
                                 <div className="menu-user-info">
                                     <span className="menu-user-name">{user.name}</span>
                                     {user.is_host && <span className="menu-host-tag">HOST</span>}
-                                    {user.id === sessionData.user_id && (
+                                    {user.id === sessionData.public_id && (
                                         <span className="menu-user-you">you</span>
                                     )}
                                 </div>
-                                {isHost && user.id !== sessionData.user_id && !user.is_host && (
+                                {isHost && user.id !== sessionData.public_id && !user.is_host && (
                                     <button
                                         type="button"
                                         className="menu-link"

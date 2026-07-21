@@ -4,8 +4,15 @@ const SessionContext = createContext(null);
 
 export function SessionProvider({children}) {
     const [sessionData, setSessionData] = useState(() => {
-        const saved = localStorage.getItem('clippy_session');
-        return saved ? JSON.parse(saved) : null;
+        // A throw in a useState initializer kills the first render and leaves a
+        // permanent white screen, so bad stored JSON must not propagate.
+        try {
+            const saved = localStorage.getItem('clippy_session');
+            return saved ? JSON.parse(saved) : null;
+        } catch {
+            localStorage.removeItem('clippy_session');
+            return null;
+        }
     });
 
     useEffect(() => {

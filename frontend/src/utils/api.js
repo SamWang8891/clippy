@@ -1,16 +1,26 @@
 /**
  * API client for Clippy backend.
  *
- * Wraps every backend endpoint and handles client-side encryption of any
- * payload that travels through the server. The server only ever sees
- * ciphertext — encryption keys live in the URL fragment, not on the wire.
+ * Wraps every backend endpoint and encrypts any payload that travels through
+ * the server, so the server sees only ciphertext. The key is derived from the
+ * connection ID (see ./encryption.js) — the server issues that ID and could
+ * derive the key too, so this is encryption at rest and opaque ciphertext on
+ * the wire, not end-to-end secrecy against a malicious server.
+ *
+ * `userId` throughout is the caller's *secret* member token. It is sent in
+ * request bodies, or in an Authorization header where there is no body — never
+ * in a URL, which would leak it to proxy logs, history and Referer headers.
  */
 
 import {encrypt} from './encryption';
 import {getBackendUrl} from './config';
 
 function getApiBase() {
-    return `${getBackendUrl()}/api/v1`;
+    return `${getBackendUrl()}/api/v2`;
+}
+
+function authHeaders(userId) {
+    return userId ? {Authorization: `Bearer ${userId}`} : {};
 }
 
 async function handleApiResponse(response) {
@@ -59,14 +69,18 @@ export async function joinSession(sessionId, userName) {
 }
 
 export async function getSession(sessionId, userId) {
-    const params = new URLSearchParams({user_id: userId ?? ''});
-    const response = await fetch(`${getApiBase()}/session/${encodeURIComponent(sessionId)}?${params}`);
+    const response = await fetch(`${getApiBase()}/session/${encodeURIComponent(sessionId)}`, {
+        headers: authHeaders(userId),
+    });
     return handleApiResponse(response);
 }
 
 export async function destroySession(sessionId, userId) {
-    const params = new URLSearchParams({connection_id: sessionId, user_id: userId});
-    const response = await fetch(`${getApiBase()}/session/destroy?${params}`, {method: 'POST'});
+    const response = await fetch(`${getApiBase()}/session/destroy`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({connection_id: sessionId, user_id: userId}),
+    });
     return handleApiResponse(response);
 }
 
@@ -124,7 +138,20 @@ export async function createTextBlock(sessionId, userId, content) {
     return handleApiResponse(response);
 }
 
+// Encrypting in the browser holds the file, its ciphertext and the base64 of
+// that in memory at once, so the practical ceiling is far below the server's
+// configured limit. Refuse early with a clear message instead of killing the tab.
+export const BROWSER_MAX_FILE_BYTES = 256 * 1024 * 1024;
+
+export function checkFileSize(file) {
+    if (file.size > BROWSER_MAX_FILE_BYTES) {
+        const mib = Math.round(BROWSER_MAX_FILE_BYTES / 1024 / 1024);
+        throw new Error(`File is too large to encrypt in the browser (max ${mib} MB)`);
+    }
+}
+
 export async function uploadFileBlock(sessionId, userId, file) {
+    checkFileSize(file);
     const arrayBuffer = await file.arrayBuffer();
     const encryptedBytes = await encrypt(new Uint8Array(arrayBuffer));
 
@@ -157,6 +184,7 @@ export async function updateTextBlock(sessionId, userId, blockId, content) {
 }
 
 export async function replaceFileBlock(sessionId, userId, blockId, file) {
+    checkFileSize(file);
     const arrayBuffer = await file.arrayBuffer();
     const encryptedBytes = await encrypt(new Uint8Array(arrayBuffer));
 
@@ -187,9 +215,20 @@ export async function deleteBlock(sessionId, userId, blockId) {
     return handleApiResponse(response);
 }
 
-export function getDownloadUrl(sessionId, blockId, userId) {
-    const params = new URLSearchParams({user_id: userId ?? ''});
-    return `${getApiBase()}/block/download/${encodeURIComponent(sessionId)}/${encodeURIComponent(blockId)}?${params}`;
+/**
+ * Fetch a block's ciphertext. Auth travels in a header, so this can't be an
+ * `<a href>` — every caller already used fetch(), so nothing is lost.
+ */
+export async function fetchBlockCiphertext(sessionId, blockId, userId) {
+    const url = `${getApiBase()}/block/download/${encodeURIComponent(sessionId)}/${encodeURIComponent(blockId)}`;
+    const response = await fetch(url, {headers: authHeaders(userId)});
+    if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
+    return response.text();
+}
+
+export async function getConfig() {
+    const response = await fetch(`${getApiBase()}/config`);
+    return handleApiResponse(response);
 }
 
 export async function createRawTextLink(sessionId, userId, blockId, content) {

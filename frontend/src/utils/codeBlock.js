@@ -28,6 +28,7 @@ export const SUPPORTED_LANGUAGES = [
     {id: 'ruby', label: 'Ruby'},
     {id: 'php', label: 'PHP'},
     {id: 'bash', label: 'Shell / Bash'},
+    {id: 'powershell', label: 'PowerShell'},
     {id: 'sql', label: 'SQL'},
     {id: 'json', label: 'JSON'},
     {id: 'yaml', label: 'YAML'},

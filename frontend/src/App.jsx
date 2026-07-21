@@ -34,7 +34,7 @@ function AppContent() {
             </main>
             {!sessionData && (
                 <footer className="app-footer">
-                    <span className="app-footer-version">Clippy v1.5.2</span>
+                    <span className="app-footer-version">Clippy v2.0.0</span>
                     <a
                         className="app-footer-repo"
                         href="https://github.com/SamWang8891/clippy"

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Background rounded square -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="#0a0a0a"/>
+
+  <!-- Clipboard body -->
+  <rect x="136" y="152" width="240" height="280" rx="20" fill="none" stroke="#fafafa" stroke-width="28"/>
+
+  <!-- Clipboard clip tab -->
+  <rect x="196" y="116" width="120" height="64" rx="12" fill="#0a0a0a" stroke="#fafafa" stroke-width="28"/>
+
+  <!-- Text lines -->
+  <line x1="196" y1="264" x2="316" y2="264" stroke="#fafafa" stroke-width="22" stroke-linecap="round"/>
+  <line x1="196" y1="328" x2="276" y2="328" stroke="#16a34a" stroke-width="22" stroke-linecap="round"/>
+</svg>
