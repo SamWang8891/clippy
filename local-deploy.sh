@@ -21,7 +21,10 @@ find docker/frontend -mindepth 1 ! -name '.gitkeep' -delete
 
 cp backend/.env.example docker/backend/.env
 cp .env.example .env
-cp frontend/public/config.example.yaml docker/frontend/config.yaml
+# The frontend fetches /config.json and parses it as JSON (see
+# frontend/src/utils/config.js). Writing the YAML example here meant the fetch
+# always failed and the dev build silently fell back to the built-in default.
+printf '{"url": "http://localhost:%s"}\n' "${WEB_PORT:-8080}" > docker/frontend/config.json
 
 echo "==> Copying build artifacts"
 cp -r frontend/dist/. docker/frontend/

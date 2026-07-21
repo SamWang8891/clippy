@@ -51,18 +51,23 @@ cat > config.json <<EOF
 EOF
 
 # Write .env
+# No ENCRYPTION_PASSPHRASE/SALT: the backend never read them. They implied a
+# server-held secret protecting stored data, when the key is actually derived
+# from the connection ID (see frontend/src/utils/encryption.js).
 cat > .env <<EOF
 WEB_PORT=${expose_port}
-ENCRYPTION_PASSPHRASE=$(head -c 32 /dev/urandom | base64)
-ENCRYPTION_SALT=$(head -c 16 /dev/urandom | base64)
 MAX_UPLOAD_SIZE_GIB=${maxfilesize}
+MAX_CURL_UPLOAD_MIB=64
 SESSION_TIMEOUT_SECONDS=3600
 CONNECTION_ID_LENGTH=${idlength}
+RAW_LINK_TTL_SECONDS=600
 ALLOWED_ORIGINS=${baseurl}
 EOF
 chmod 600 .env
 
-# Start
+# Start — pull explicitly so a reinstall picks up a newer :latest rather than
+# silently reusing whatever image is already cached locally.
+docker compose -f docker-compose.prod.yaml pull
 docker compose -f docker-compose.prod.yaml up -d
 
 echo ""
