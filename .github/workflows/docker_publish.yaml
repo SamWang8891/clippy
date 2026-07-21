@@ -1,11 +1,17 @@
 name: Publish Docker Image
 
 on:
+  # `dev` is here so a branch can be built and tested before it reaches main.
+  # A non-main build publishes a branch-named tag only — never :latest — and the
+  # deploy job below is gated to main, so it cannot touch a live deployment.
+  #
+  # This has to be a `push` trigger rather than workflow_dispatch alone:
+  # GitHub registers workflow_dispatch from the *default branch's* copy of the
+  # file, so `gh workflow run --ref dev` 404s until the file exists on main.
+  # push/pull_request run the workflow from the pushed commit, so they work now.
   push:
-    branches: [main]
-  # Lets a branch be built and published for testing before it reaches main.
-  # Manual runs publish a branch-named tag only — never :latest — and skip the
-  # deploy job entirely.
+    branches: [main, dev]
+  # Becomes usable once this file is on main; harmless until then.
   workflow_dispatch:
 
 jobs:

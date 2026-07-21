@@ -130,21 +130,34 @@ authenticate with and will fail at the credentials step.
 
 ### Testing a branch before it reaches main
 
-`push: [main]` means a branch never produces an image. To build one without
-merging, trigger the workflow by hand:
+Pushing to `dev` builds and publishes `ghcr.io/samwang8891/clippy:dev`. It never
+moves `:latest`, and the `deploy` job is gated on
+`github.ref == 'refs/heads/main'`, so a `dev` build cannot touch a live
+deployment. Point a stack at that tag with
+`npx cdk deploy -c clippy:imageTag=dev` — see `clippy-infra/README.md`.
+
+> **Why `dev` is in the `push:` list rather than relying on `workflow_dispatch`.**
+> GitHub registers `workflow_dispatch` from the **default branch's** copy of the
+> workflow file. Until `docker_publish.yaml` exists on `main`, the workflow does
+> not exist as far as the API is concerned and manual runs fail with:
+>
+> ```
+> HTTP 404: workflow docker_publish.yaml not found on the default branch
+> ```
+>
+> `push` and `pull_request` triggers behave differently — they run the workflow
+> file from the pushed commit, so they work on a branch immediately. The
+> `workflow_dispatch` trigger is kept for once this lands on `main`, after which
+> `gh workflow run docker_publish.yaml --ref <branch>` starts working.
+
+If you would rather not involve CI at all, build and push by hand with a PAT
+that has `write:packages`:
 
 ```sh
-gh workflow run docker_publish.yaml --ref dev
+echo "$CR_PAT" | docker login ghcr.io -u SamWang8891 --password-stdin
+docker build -t ghcr.io/samwang8891/clippy:dev .
+docker push ghcr.io/samwang8891/clippy:dev
 ```
-
-or Actions → *Publish Docker Image* → **Run workflow** → branch `dev`.
-
-A manual run publishes `ghcr.io/samwang8891/clippy:dev` **only** — it never
-moves `:latest`, and the `deploy` job is gated on `github.ref == refs/heads/main`
-so it does not run at all. Nothing touches a live deployment.
-
-Point a stack at that tag with `npx cdk deploy -c clippy:imageTag=dev`; see
-`clippy-infra/README.md`.
 
 ### The package must be public
 
