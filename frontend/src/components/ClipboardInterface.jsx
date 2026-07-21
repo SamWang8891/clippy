@@ -17,6 +17,9 @@ export function ClipboardInterface() {
     const {sessionData, clearSession} = useSession();
     const toast = useToast();
     const confirm = useConfirm();
+    // Our public id — what other members see. sessionData.user_id is the secret
+    // token and never appears in the broadcast user list.
+    const myPublicId = sessionData?.public_id;
     const [session, setSession] = useState(null);
     const [blocks, setBlocks] = useState([]);
     const [users, setUsers] = useState([]);
@@ -40,9 +43,13 @@ export function ClipboardInterface() {
             await loadSession();
         })();
 
+        // Only normalise the URL when it isn't already pointing at a *different*
+        // session. Rewriting unconditionally meant opening someone's invite link
+        // while already in a session silently snapped you back to your own.
         const expectedUrl = `/${sessionData.connection_id}`;
-        const currentUrl = `${window.location.pathname}${window.location.hash}`;
-        if (currentUrl !== expectedUrl) {
+        const pathId = window.location.pathname.replace(/^\//, '').trim().toLowerCase();
+        const isForeignInvite = pathId && pathId !== sessionData.connection_id;
+        if (!isForeignInvite && window.location.pathname !== expectedUrl) {
             window.history.replaceState({}, '', expectedUrl);
         }
 
@@ -93,7 +100,11 @@ export function ClipboardInterface() {
     const handleWebSocketMessage = useCallback((message) => {
         switch (message.type) {
             case 'user_joined':
-                setUsers((prev) => [...prev, message.user]);
+                // Guard against a duplicate if the initial load lands after the
+                // event that announced the same user.
+                setUsers((prev) => prev.some((u) => u.id === message.user.id)
+                    ? prev
+                    : [...prev, message.user]);
                 showNotification(`${message.user.name} joined`);
                 break;
 
@@ -122,7 +133,7 @@ export function ClipboardInterface() {
             case 'host_transferred':
                 setUsers((prev) => prev.map((u) => ({...u, is_host: u.id === message.new_host_id})));
                 setSession((prev) => ({...prev, host_id: message.new_host_id}));
-                if (message.new_host_id === sessionData.user_id) {
+                if (message.new_host_id === myPublicId) {
                     showNotification('You are now the host');
                 }
                 break;
@@ -142,7 +153,7 @@ export function ClipboardInterface() {
                 }, 2000);
                 break;
         }
-    }, [sessionData]);
+    }, [myPublicId]);
 
     const handleAuthRejected = useCallback(() => {
         toast.error('Session no longer available — returning to home.');
@@ -151,11 +162,14 @@ export function ClipboardInterface() {
         setTimeout(() => window.location.reload(), 1200);
     }, [clearSession, toast]);
 
+    // Passed by identity into a ref inside the hook, so re-creating it each
+    // render only refreshes that ref — it never re-opens the socket.
     const {isConnected} = useWebSocket(
         sessionData?.connection_id,
         sessionData?.user_id,
         handleWebSocketMessage,
         handleAuthRejected,
+        loadSession,
     );
 
     const showNotification = (text) => {
@@ -228,7 +242,7 @@ export function ClipboardInterface() {
         }
     };
 
-    const currentUser = users.find((u) => u.id === sessionData?.user_id);
+    const currentUser = users.find((u) => u.id === myPublicId);
 
     const countLabel = blocks.length === 0
         ? 'No items yet.'

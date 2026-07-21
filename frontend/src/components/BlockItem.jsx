@@ -4,7 +4,7 @@ import powershell from 'highlight.js/lib/languages/powershell';
 hljs.registerLanguage('powershell', powershell);
 import {useToast} from '../context/ToastContext';
 import {decrypt, decryptToBytes} from '../utils/encryption';
-import {getDownloadUrl, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
+import {fetchBlockCiphertext, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock, parseBlockContent} from '../utils/codeBlock';
 import './BlockItem.css';
 
@@ -155,9 +155,7 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
 
     const handleDownload = async () => {
         try {
-            const response = await fetch(getDownloadUrl(sessionId, block.id, userId));
-            if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
-            const encryptedData = await response.text();
+            const encryptedData = await fetchBlockCiphertext(sessionId, block.id, userId);
             const bytes = await decryptToBytes(encryptedData);
 
             const blob = new Blob([bytes], {type: 'application/octet-stream'});
@@ -230,9 +228,7 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
             if (block.type === 'text') {
                 data = await createRawTextLink(sessionId, userId, block.id, parsed.body);
             } else {
-                const response = await fetch(getDownloadUrl(sessionId, block.id, userId));
-                if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
-                const encryptedData = await response.text();
+                const encryptedData = await fetchBlockCiphertext(sessionId, block.id, userId);
                 const bytes = await decryptToBytes(encryptedData);
                 const blob = new Blob([bytes], {type: 'application/octet-stream'});
                 const originalFilename = block.original_filename || block.filename || 'download';
@@ -287,7 +283,7 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
                             <span className="block-dot">·</span>
                         </>
                     )}
-                    {block.type === 'file' && block.size != null && (
+                    {block.type === 'file' && block.size > 0 && (
                         <>
                             <span>{formatBytes(block.size)}</span>
                             <span className="block-dot">·</span>

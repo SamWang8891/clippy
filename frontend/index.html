@@ -10,9 +10,10 @@
 	<link href="/favicon-32x32.png" rel="icon" sizes="32x32" type="image/png">
 	<link href="/favicon-16x16.png" rel="icon" sizes="16x16" type="image/png">
 	<link href="/site.webmanifest" rel="manifest">
-	<link rel="preconnect" href="https://fonts.googleapis.com">
-	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+	<!-- No webfont CDN: it would disclose every visitor's IP to a third party
+	     (poor fit for a self-hosted clipboard) and break air-gapped installs.
+	     --font-sans / --font-mono in index.css still prefer Inter and JetBrains
+	     Mono when installed locally, and fall back to system faces otherwise. -->
 	<script>
 		(function () {
 			try {
