@@ -19,7 +19,7 @@ import aiofiles
 import uvicorn
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -52,10 +52,22 @@ MAX_BLOCKS_PER_SESSION = int(os.getenv("MAX_BLOCKS_PER_SESSION", "200"))
 MAX_TEXT_BLOCK_LENGTH = int(os.getenv("MAX_TEXT_BLOCK_LENGTH", "1048576"))  # 1 MiB ciphertext
 MAX_SESSION_BYTES_GIB = float(os.getenv("MAX_SESSION_BYTES_GIB", "5"))
 MAX_SESSION_BYTES = int(MAX_SESSION_BYTES_GIB * 1024 * 1024 * 1024)
-RAW_LINK_CODE_LENGTH = 4
+RAW_LINK_CODE_LENGTH = 6
 RAW_LINK_TTL_SECONDS = int(os.getenv("RAW_LINK_TTL_SECONDS", "600"))
+MAX_RAW_LINKS_PER_SESSION = int(os.getenv("MAX_RAW_LINKS_PER_SESSION", "50"))
+# The curl path has to hold the whole body, its ciphertext and the base64 of that
+# in memory at once (AES-GCM is single-shot and the browser decrypts one blob),
+# so peak RSS is ~2.7x this value. Keep it well under the box's RAM — it is a
+# separate, much smaller cap than MAX_FILE_SIZE for exactly that reason.
+MAX_CURL_UPLOAD_BYTES = int(os.getenv("MAX_CURL_UPLOAD_MIB", "64")) * 1024 * 1024
+# Serve interactive API docs only when explicitly enabled.
+ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
 
-KDF_PREFIX = b"clippy-session-v2:"
+# Wire-format constant, NOT an API version: it is baked into the key derivation
+# and must byte-match KDF_PREFIX in frontend/src/utils/encryption.js. Changing it
+# makes every previously stored block undecryptable. Do not sweep it with an
+# api-version find/replace — tests/test_crypto_interop.py pins the derived key.
+KDF_PREFIX = b"clippy-session-v1:"
 ENCRYPTION_IV_LENGTH = 12
 
 
@@ -65,6 +77,7 @@ def server_encrypt(connection_id: str, plaintext: bytes) -> str:
     iv = os.urandom(ENCRYPTION_IV_LENGTH)
     ciphertext_with_tag = AESGCM(key).encrypt(iv, plaintext, None)
     return base64.b64encode(iv + ciphertext_with_tag).decode("ascii")
+
 
 # Initialize FastAPI app
 @asynccontextmanager
@@ -126,9 +139,15 @@ app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
     version="2.0.0",
-    openapi_url="/api/v2/openapi.json",
-    docs_url="/api/v2/docs",
+    openapi_url="/api/v2/openapi.json" if ENABLE_DOCS else None,
+    docs_url="/api/v2/docs" if ENABLE_DOCS else None,
+    redoc_url=None,
     lifespan=lifespan,
+)
+
+router = APIRouter(
+    prefix="/api/v2",
+    tags=["newest-endpoints"],
 )
 
 # CORS middleware
@@ -156,6 +175,14 @@ SESSION_TIMEOUT = timedelta(seconds=SESSION_TIMEOUT_SECONDS)
 
 # Pydantic models
 class User(BaseModel):
+    """Public view of a member. Safe to broadcast — holds no credential.
+
+    ``id`` identifies a member to everyone else (so hosts can target a
+    transfer); the member's *secret* token lives in ``Session.tokens`` and is
+    never serialized. Conflating the two let any member read the host's
+    credential out of the user list and seize the session.
+    """
+
     id: str
     name: str
     is_host: bool
@@ -170,6 +197,7 @@ class Block(BaseModel):
     content: str | None = None
     filename: str | None = None
     original_filename: str | None = None
+    size: int = 0
     created_by: str
     created_at: str
 
@@ -195,7 +223,9 @@ class JoinSessionRequest(BaseModel):
 class CreateBlockRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
-    type: BlockType
+    # Only text blocks are creatable here — a "file" block created without an
+    # upload has no filename and can never be downloaded.
+    type: Literal["text"] = "text"
     content: str | None = Field(default=None, max_length=MAX_TEXT_BLOCK_LENGTH)
 
 
@@ -212,8 +242,14 @@ class UpdateTextBlockRequest(BaseModel):
     content: str = Field(max_length=MAX_TEXT_BLOCK_LENGTH)
 
 
+class DestroySessionRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+
+
 class TransferHostRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
+    # Caller's secret token; `new_host_id` is the target's *public* id.
     current_host_id: str = Field(min_length=1, max_length=64)
     new_host_id: str = Field(min_length=1, max_length=64)
 
@@ -238,6 +274,11 @@ class RawLink(BaseModel):
     filename: str
     original_filename: str | None = None
     created_at: str
+    # Absolute expiry, set at creation. Previously links had no expiry at all
+    # while the session lived, so RAW_LINK_TTL_SECONDS only applied after the
+    # session was destroyed and a shared link was effectively permanent.
+    expires_at: str
+    size: int = 0
 
 
 class CreateRawTextRequest(BaseModel):
@@ -262,32 +303,45 @@ class Session:
         session_dir: Directory path for storing session files
     """
 
-    def __init__(self, connection_id: str, host_id: str, host_name: str):
+    def __init__(self, connection_id: str, host_token: str, host_id: str, host_name: str):
         """Initialize a new session with a host user."""
         self.connection_id = connection_id
         self.users: dict[str, User] = {
             host_id: User(id=host_id, name=host_name, is_host=True)
         }
+        # Secret member token -> public user id. Never serialized to clients.
+        self.tokens: dict[str, str] = {host_token: host_id}
         self.blocks: dict[str, Block] = {}
         self.block_bytes: dict[str, int] = {}  # block_id -> byte size on disk
         self.total_bytes = 0
+        # Bytes promised to in-flight uploads that have not yet been committed,
+        # so concurrent uploads can't all size themselves off the same baseline.
+        self.reserved_bytes = 0
         self.allow_join = True
         self.allow_curl_upload = False
         self.last_activity = datetime.now()
         self.websockets: dict[str, set[WebSocket]] = {}
-        # Pending eviction tasks keyed by user_id so reconnects can cancel them.
+        # Pending eviction tasks keyed by public user id so reconnects can cancel them.
         self.pending_disconnects: dict[str, asyncio.Task] = {}
         self.session_dir = UPLOAD_DIR / connection_id
         self.session_dir.mkdir(exist_ok=True)
 
-    def has_member(self, user_id: str) -> bool:
-        return user_id in self.users
+    def member_id(self, token: str) -> str | None:
+        """Resolve a secret member token to its public user id, or None."""
+        return self.tokens.get(token)
+
+    def is_host_token(self, token: str) -> bool:
+        uid = self.tokens.get(token)
+        return uid is not None and self.users[uid].is_host
+
+    def committed_bytes(self) -> int:
+        return self.total_bytes + self.reserved_bytes
 
     def quota_check(self, additional_bytes: int = 0) -> str | None:
         """Return None if quota is OK, else a human-readable error reason."""
         if len(self.blocks) >= MAX_BLOCKS_PER_SESSION:
             return f"Block limit reached ({MAX_BLOCKS_PER_SESSION})"
-        if self.total_bytes + additional_bytes > MAX_SESSION_BYTES:
+        if self.committed_bytes() + additional_bytes > MAX_SESSION_BYTES:
             return f"Session storage quota exceeded ({MAX_SESSION_BYTES} bytes)"
         return None
 
@@ -315,18 +369,21 @@ class Session:
             counter += 1
         return f"{base_name}({counter})"
 
-    def add_user(self, user_id: str, name: str) -> User:
+    def add_user(self, token: str, user_id: str, name: str) -> User:
         """Add a new user to the session with a unique name."""
         unique_name = self.get_unique_name(name)
         user = User(id=user_id, name=unique_name, is_host=False)
         self.users[user_id] = user
+        self.tokens[token] = user_id
         self.update_activity()
         return user
 
     def remove_user(self, user_id: str):
-        """Remove a user and their WebSocket connections from the session."""
+        """Remove a user, their token and their WebSocket connections."""
         if user_id in self.users:
             del self.users[user_id]
+        for token in [t for t, u in self.tokens.items() if u == user_id]:
+            del self.tokens[token]
         self.websockets.pop(user_id, None)
         pending = self.pending_disconnects.pop(user_id, None)
         if pending is not None and not pending.done():
@@ -347,19 +404,20 @@ class Session:
         self.update_activity()
 
     def delete_block(self, block_id: str):
-        """Delete a block and its associated files from the session."""
+        """Delete a block, its files, and any raw links exposing its content."""
         if block_id in self.blocks:
             block = self.blocks[block_id]
             if block.type == "file" and block.filename:
                 file_path = self.session_dir / block.filename
-                if file_path.exists():
-                    file_path.unlink()
+                file_path.unlink(missing_ok=True)
             elif block.type == "text":
                 text_file = self.session_dir / f"text_block_{block_id}.txt"
-                if text_file.exists():
-                    text_file.unlink()
+                text_file.unlink(missing_ok=True)
             del self.blocks[block_id]
             self.total_bytes -= self.block_bytes.pop(block_id, 0)
+        # A raw link serves *decrypted* content, so leaving it alive after the
+        # block is gone keeps publishing data the user believes they deleted.
+        purge_raw_links_for_block(self.connection_id, block_id)
         self.update_activity()
 
     async def broadcast(self, message: dict, exclude_user: str | None = None):
@@ -384,6 +442,7 @@ class Session:
         return {
             "connection_id": self.connection_id,
             "users": {uid: u.model_dump() for uid, u in self.users.items()},
+            "tokens": self.tokens,
             "blocks": {bid: b.model_dump() for bid, b in self.blocks.items()},
             "block_bytes": self.block_bytes,
             "allow_join": self.allow_join,
@@ -396,9 +455,14 @@ class Session:
         instance = cls.__new__(cls)
         instance.connection_id = data["connection_id"]
         instance.users = {uid: User(**u) for uid, u in data.get("users", {}).items()}
+        # Drop tokens pointing at users that no longer exist.
+        instance.tokens = {
+            t: uid for t, uid in data.get("tokens", {}).items() if uid in instance.users
+        }
         instance.blocks = {bid: Block(**b) for bid, b in data.get("blocks", {}).items()}
         instance.block_bytes = dict(data.get("block_bytes", {}))
         instance.total_bytes = sum(instance.block_bytes.values())
+        instance.reserved_bytes = 0
         instance.allow_join = data.get("allow_join", True)
         instance.allow_curl_upload = data.get("allow_curl_upload", False)
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
@@ -474,9 +538,9 @@ async def persistence_loop() -> None:
                 logger.error("Failed to persist raw links: %s", e)
 
 
-# Raw-link storage — decoupled from sessions so links survive session teardown.
+# Raw-link storage. Each link carries its own absolute expiry so a shared link
+# stops resolving on a fixed schedule instead of living as long as the session.
 raw_links: dict[str, dict[str, RawLink]] = {}  # connection_id -> {code -> RawLink}
-raw_link_expiry: dict[str, datetime] = {}  # connection_id -> when to delete
 _raw_links_dirty = False
 
 
@@ -485,13 +549,46 @@ def mark_raw_links_dirty() -> None:
     _raw_links_dirty = True
 
 
+def _discard_raw_link(connection_id: str, code: str) -> int:
+    """Drop one link and unlink its on-disk payload. Returns bytes freed."""
+    link = raw_links.get(connection_id, {}).pop(code, None)
+    if link is None:
+        return 0
+    (RAW_DIR / connection_id / link.filename).unlink(missing_ok=True)
+    if not raw_links.get(connection_id):
+        raw_links.pop(connection_id, None)
+        shutil.rmtree(RAW_DIR / connection_id, ignore_errors=True)
+    return link.size
+
+
+def purge_raw_links_for_block(connection_id: str, block_id: str) -> None:
+    """Revoke every raw link derived from a given block."""
+    session_links = raw_links.get(connection_id)
+    if not session_links:
+        return
+    doomed = [code for code, rl in session_links.items() if rl.block_id == block_id]
+    freed = sum(_discard_raw_link(connection_id, code) for code in doomed)
+    session = sessions.get(connection_id)
+    if session is not None:
+        session.total_bytes -= freed
+    if doomed:
+        mark_raw_links_dirty()
+
+
+def purge_raw_links_for_session(connection_id: str) -> None:
+    for code in list(raw_links.get(connection_id, {})):
+        _discard_raw_link(connection_id, code)
+    raw_links.pop(connection_id, None)
+    shutil.rmtree(RAW_DIR / connection_id, ignore_errors=True)
+    mark_raw_links_dirty()
+
+
 async def save_raw_links() -> None:
     payload = json.dumps({
         "links": {
             cid: {code: rl.model_dump() for code, rl in links.items()}
             for cid, links in raw_links.items()
         },
-        "expiry": {cid: dt.isoformat() for cid, dt in raw_link_expiry.items()},
     })
     tmp_path = RAW_LINKS_FILE.with_suffix(".tmp")
     async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
@@ -513,11 +610,6 @@ def load_raw_links_sync() -> None:
             raw_links[cid] = {code: RawLink(**rl) for code, rl in links.items()}
         except Exception as e:  # noqa: BLE001
             logger.warning("Skipping malformed raw links for %s: %s", cid, e)
-    for cid, dt_str in data.get("expiry", {}).items():
-        try:
-            raw_link_expiry[cid] = datetime.fromisoformat(dt_str)
-        except (ValueError, TypeError) as e:
-            logger.warning("Skipping malformed raw link expiry for %s: %s", cid, e)
 
 
 def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> JSONResponse:
@@ -541,6 +633,52 @@ def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> 
     return JSONResponse(status_code=status.value, content=content)
 
 
+async def _read_capped(reader, limit: int) -> bytes | None:
+    """Pull from ``reader(n)`` until EOF, or return None once ``limit`` is passed.
+
+    Starlette spools multipart files to disk, but the handler still has to hold
+    the plaintext, its ciphertext and the base64 of that simultaneously, so the
+    in-memory size has to be bounded before the first byte is retained.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await reader(1024 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+
+
+async def _read_body_capped(request: Request, limit: int) -> bytes | None:
+    """Stream a request body, abandoning it as soon as it exceeds ``limit``."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def bearer_token(request: Request) -> str:
+    """Pull the member token out of the Authorization header.
+
+    Deliberately not a query parameter: the token is a credential, and query
+    strings end up in proxy access logs, browser history and Referer headers.
+    """
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    return value.strip() if scheme.lower() == "bearer" else ""
+
+
+def new_member() -> tuple[str, str]:
+    """Return (secret token, public user id) for a new member."""
+    return secrets.token_urlsafe(32), uuid.uuid4().hex[:12]
+
+
 def generate_connection_id() -> str | None:
     """
     Generate a unique connection ID using lowercase letters and digits.
@@ -556,10 +694,22 @@ def generate_connection_id() -> str | None:
         return None
 
     for _ in range(min(max_possible, 1000)):
-        candidate = "".join(random.choices(chars, k=CONNECTION_ID_LENGTH))
+        # secrets, not random: the connection id is the session's only access
+        # token, and random's Mersenne Twister state is recoverable from a few
+        # dozen observed ids (session creation is unauthenticated).
+        candidate = "".join(secrets.choice(chars) for _ in range(CONNECTION_ID_LENGTH))
         if candidate not in sessions:
             return candidate
 
+    return None
+
+
+def raw_link_quota_check(session: "Session", additional_bytes: int) -> str | None:
+    """Raw links consume session storage and are capped in number."""
+    if len(raw_links.get(session.connection_id, {})) >= MAX_RAW_LINKS_PER_SESSION:
+        return f"Raw link limit reached ({MAX_RAW_LINKS_PER_SESSION})"
+    if session.committed_bytes() + additional_bytes > MAX_SESSION_BYTES:
+        return f"Session storage quota exceeded ({MAX_SESSION_BYTES} bytes)"
     return None
 
 
@@ -616,9 +766,9 @@ async def _teardown_session(connection_id: str, reason: str):
     if session.session_dir.exists():
         shutil.rmtree(session.session_dir, ignore_errors=True)
 
-    if connection_id in raw_links:
-        raw_link_expiry[connection_id] = datetime.now() + timedelta(seconds=RAW_LINK_TTL_SECONDS)
-        mark_raw_links_dirty()
+    # "Destroy" must mean destroyed: raw links serve decrypted plaintext, so
+    # outliving the session would contradict what the confirmation dialog says.
+    purge_raw_links_for_session(connection_id)
 
     mark_sessions_dirty()
 
@@ -635,26 +785,35 @@ async def cleanup_expired_sessions():
             await _teardown_session(sid, "timeout")
 
         now = datetime.now()
-        stale = [cid for cid, exp in raw_link_expiry.items() if now > exp]
-        for cid in stale:
-            raw_links.pop(cid, None)
-            raw_link_expiry.pop(cid, None)
-            raw_dir = RAW_DIR / cid
-            if raw_dir.exists():
-                shutil.rmtree(raw_dir, ignore_errors=True)
+        stale = [
+            (cid, code)
+            for cid, links in raw_links.items()
+            for code, rl in links.items()
+            if now > datetime.fromisoformat(rl.expires_at)
+        ]
+        for cid, code in stale:
+            freed = _discard_raw_link(cid, code)
+            session = sessions.get(cid)
+            if session is not None:
+                session.total_bytes -= freed
         if stale:
             mark_raw_links_dirty()
+            mark_sessions_dirty()
 
 
-@app.get(
-    "/api/v2/config",
+@router.get(
+    "/config",
     summary="Get Configuration",
     description="Retrieve client configuration (file size limits)."
 )
 async def get_config():
     """
-    Get client configuration. Encryption keys are generated client-side and
-    transported via the URL fragment, so the server never sees them.
+    Get client configuration.
+
+    Content is encrypted in the browser, but the key is derived from the
+    connection ID rather than a URL fragment — see
+    frontend/src/utils/encryption.js. The server issues that ID, so this is
+    encryption at rest, not end-to-end secrecy against the server.
     """
     return api_response(
         HTTPStatus.OK,
@@ -665,8 +824,8 @@ async def get_config():
     )
 
 
-@app.get(
-    "/api/v2/session/id-length",
+@router.get(
+    "/session/id-length",
     summary="Get Connection ID Length",
     description="Retrieve the configured connection ID length"
 )
@@ -686,8 +845,8 @@ async def get_connection_id_length():
     )
 
 
-@app.post(
-    "/api/v2/session/create",
+@router.post(
+    "/session/create",
     summary="Create New Session",
     description="Create a new collaborative session and become the host"
 )
@@ -708,10 +867,10 @@ async def create_session(request: CreateSessionRequest):
             "Unable to create session: all connection IDs are currently in use. Please try again later."
         )
 
-    user_id = str(uuid.uuid4())
+    token, user_id = new_member()
     user_name = request.user_name or generate_random_name()
 
-    session = Session(connection_id, user_id, user_name)
+    session = Session(connection_id, token, user_id, user_name)
     sessions[connection_id] = session
     mark_sessions_dirty()
 
@@ -720,15 +879,18 @@ async def create_session(request: CreateSessionRequest):
         "Session created",
         {
             "connection_id": connection_id,
-            "user_id": user_id,
+            # `user_id` is the caller's secret token; `public_id` is what other
+            # members see. Never send one where the other is expected.
+            "user_id": token,
+            "public_id": user_id,
             "user_name": user_name,
             "is_host": True
         }
     )
 
 
-@app.post(
-    "/api/v2/session/join",
+@router.post(
+    "/session/join",
     summary="Join Existing Session",
     description="Join an existing session using a session ID"
 )
@@ -758,37 +920,41 @@ async def join_session(request: JoinSessionRequest):
             "Session is not accepting new members"
         )
 
-    user_id = str(uuid.uuid4())
+    token, user_id = new_member()
     user_name = request.user_name or generate_random_name()
 
-    user = session.add_user(user_id, user_name)
+    user = session.add_user(token, user_id, user_name)
 
-    # Broadcast user joined
+    # Broadcast user joined — User carries no credential, so this is safe.
     await session.broadcast({
         "type": "user_joined",
         "user": user.model_dump()
     })
+    mark_sessions_dirty()
 
     return api_response(
         HTTPStatus.OK,
         "Connection created",
         {
             "connection_id": connection_id,
-            "user_id": user_id,
+            "user_id": token,
+            "public_id": user_id,
             "user_name": user.name,
             "is_host": False
         }
     )
 
 
-@app.get(
-    "/api/v2/session/{connection_id}",
+@router.get(
+    "/session/{connection_id}",
     summary="Get Session Details",
     description="Retrieve complete session information including users and blocks"
 )
-async def get_session(connection_id: str, user_id: str):
+async def get_session(connection_id: str, request: Request):
     """
     Get detailed information about a session. The caller must be a member.
+
+    Authenticates via ``Authorization: Bearer <token>``.
     """
     connection_id = connection_id.lower()
 
@@ -796,7 +962,7 @@ async def get_session(connection_id: str, user_id: str):
         return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
-    if not session.has_member(user_id):
+    if session.member_id(bearer_token(request)) is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     session_info = SessionInfo(
@@ -815,22 +981,22 @@ async def get_session(connection_id: str, user_id: str):
     )
 
 
-@app.post(
-    "/api/v2/session/destroy",
+@router.post(
+    "/session/destroy",
     summary="Destroy Session",
     description="Permanently delete a session and all its data (host only)"
 )
-async def destroy_session(connection_id: str, user_id: str):
+async def destroy_session(request: DestroySessionRequest):
     """
     Destroy a session and clean up all associated data.
 
     Only the session host can destroy a session. This will:
     - Notify all connected users
     - Close all WebSocket connections
-    - Delete all uploaded files and text blocks
+    - Delete all uploaded files, text blocks and raw links
     - Remove the session from memory
     """
-    connection_id = connection_id.lower()
+    connection_id = request.connection_id.lower()
 
     if connection_id not in sessions:
         return api_response(
@@ -840,8 +1006,7 @@ async def destroy_session(connection_id: str, user_id: str):
 
     session = sessions[connection_id]
 
-    # Verify user is host
-    if user_id not in session.users or not session.users[user_id].is_host:
+    if not session.is_host_token(request.user_id):
         return api_response(
             HTTPStatus.FORBIDDEN,
             "Only host can destroy session"
@@ -856,8 +1021,8 @@ async def destroy_session(connection_id: str, user_id: str):
     )
 
 
-@app.post(
-    "/api/v2/session/transfer_host",
+@router.post(
+    "/session/transfer_host",
     summary="Transfer Host Rights",
     description="Transfer host privileges to another user in the session"
 )
@@ -879,8 +1044,7 @@ async def transfer_host(request: TransferHostRequest):
 
     session = sessions[connection_id]
 
-    # Verify current user is host
-    if request.current_host_id not in session.users or not session.users[request.current_host_id].is_host:
+    if not session.is_host_token(request.current_host_id):
         return api_response(
             HTTPStatus.FORBIDDEN,
             "Only host can transfer host rights"
@@ -907,8 +1071,8 @@ async def transfer_host(request: TransferHostRequest):
     )
 
 
-@app.post(
-    "/api/v2/session/toggle_join",
+@router.post(
+    "/session/toggle_join",
     summary="Toggle Join Permission",
     description="Enable or disable new users from joining the session (host only)"
 )
@@ -929,8 +1093,7 @@ async def toggle_join(request: ToggleJoinRequest):
 
     session = sessions[connection_id]
 
-    # Verify user is host
-    if request.user_id not in session.users or not session.users[request.user_id].is_host:
+    if not session.is_host_token(request.user_id):
         return api_response(
             HTTPStatus.FORBIDDEN,
             "Only host can toggle join permission"
@@ -952,8 +1115,8 @@ async def toggle_join(request: ToggleJoinRequest):
     )
 
 
-@app.post(
-    "/api/v2/session/toggle_curl",
+@router.post(
+    "/session/toggle_curl",
     summary="Toggle Curl Upload",
     description="Enable or disable curl-based uploads to the session (host only)"
 )
@@ -965,7 +1128,7 @@ async def toggle_curl(request: ToggleCurlRequest):
 
     session = sessions[connection_id]
 
-    if request.user_id not in session.users or not session.users[request.user_id].is_host:
+    if not session.is_host_token(request.user_id):
         return api_response(HTTPStatus.FORBIDDEN, "Only host can toggle curl upload")
 
     session.allow_curl_upload = request.allow_curl_upload
@@ -979,8 +1142,8 @@ async def toggle_curl(request: ToggleCurlRequest):
     return api_response(HTTPStatus.OK, "Curl upload permission updated", {"success": True})
 
 
-@app.post(
-    "/api/v2/block/create",
+@router.post(
+    "/block/create",
     summary="Create Text Block",
     description="Create a new text block in the session"
 )
@@ -999,7 +1162,8 @@ async def create_text_block(request: CreateBlockRequest):
 
     session = sessions[connection_id]
 
-    if not session.has_member(request.user_id):
+    uid = session.member_id(request.user_id)
+    if uid is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     content_bytes = len(request.content.encode("utf-8")) if request.content else 0
@@ -1012,7 +1176,8 @@ async def create_text_block(request: CreateBlockRequest):
         id=block_id,
         type=request.type,
         content=request.content,
-        created_by=request.user_id,
+        size=content_bytes,
+        created_by=uid,
         created_at=datetime.now().isoformat(),
     )
 
@@ -1036,8 +1201,8 @@ async def create_text_block(request: CreateBlockRequest):
     )
 
 
-@app.post(
-    "/api/v2/block/upload",
+@router.post(
+    "/block/upload",
     summary="Upload File Block",
     description="Upload a file to the session (encrypted)"
 )
@@ -1060,7 +1225,8 @@ async def upload_file_block(
 
     session = sessions[connection_id]
 
-    if not session.has_member(user_id):
+    uid = session.member_id(user_id)
+    if uid is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     quota_error = session.quota_check(0)
@@ -1076,10 +1242,12 @@ async def upload_file_block(
     safe_filename = f"file_{block_id}{safe_suffix}"
     file_path = session.session_dir / safe_filename
 
-    # Per-request hard cap; also re-check the per-session quota mid-stream so a
-    # single huge upload can't exceed the session bytes budget.
-    per_session_remaining = MAX_SESSION_BYTES - session.total_bytes
-    effective_cap = min(MAX_FILE_SIZE, per_session_remaining)
+    # Reserve the worst case up front. Sizing off total_bytes alone let N
+    # concurrent uploads each measure against the same empty baseline and
+    # collectively blow past the session quota by a factor of N.
+    per_session_remaining = MAX_SESSION_BYTES - session.committed_bytes()
+    effective_cap = max(0, min(MAX_FILE_SIZE, per_session_remaining))
+    session.reserved_bytes += effective_cap
     chunk_size = 1024 * 1024
     bytes_written = 0
     overflow = False
@@ -1095,13 +1263,13 @@ async def upload_file_block(
                     break
                 await f.write(chunk)
     except Exception:
-        if file_path.exists():
-            file_path.unlink()
+        file_path.unlink(missing_ok=True)
         raise
+    finally:
+        session.reserved_bytes -= effective_cap
 
     if overflow:
-        if file_path.exists():
-            file_path.unlink()
+        file_path.unlink(missing_ok=True)
         message = (
             f"File too large. Max size: {MAX_FILE_SIZE} bytes"
             if bytes_written > MAX_FILE_SIZE
@@ -1114,7 +1282,8 @@ async def upload_file_block(
         type="file",
         filename=safe_filename,
         original_filename=file.filename,
-        created_by=user_id,
+        size=bytes_written,
+        created_by=uid,
         created_at=datetime.now().isoformat(),
     )
 
@@ -1133,8 +1302,8 @@ async def upload_file_block(
     )
 
 
-@app.patch(
-    "/api/v2/block/update",
+@router.patch(
+    "/block/update",
     summary="Update Text Block",
     description="Replace the content of an existing text block"
 )
@@ -1152,7 +1321,7 @@ async def update_text_block(request: UpdateTextBlockRequest):
 
     session = sessions[connection_id]
 
-    if not session.has_member(request.user_id):
+    if session.member_id(request.user_id) is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     block = session.blocks.get(request.block_id)
@@ -1171,6 +1340,7 @@ async def update_text_block(request: UpdateTextBlockRequest):
             return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, quota_error)
 
     block.content = request.content
+    block.size = new_bytes
     session.block_bytes[request.block_id] = new_bytes
     session.total_bytes += delta
 
@@ -1178,6 +1348,9 @@ async def update_text_block(request: UpdateTextBlockRequest):
     async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
         await f.write(request.content)
 
+    # Existing raw links still serve the *old* plaintext from their own copy on
+    # disk, which would silently outlive the edit. Revoke them.
+    purge_raw_links_for_block(connection_id, request.block_id)
     session.update_activity()
 
     await session.broadcast({
@@ -1192,8 +1365,8 @@ async def update_text_block(request: UpdateTextBlockRequest):
     )
 
 
-@app.post(
-    "/api/v2/block/replace",
+@router.post(
+    "/block/replace",
     summary="Replace File Block",
     description="Upload a new file to replace the contents of an existing file block"
 )
@@ -1217,7 +1390,7 @@ async def replace_file_block(
 
     session = sessions[connection_id]
 
-    if not session.has_member(user_id):
+    if session.member_id(user_id) is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     block = session.blocks.get(block_id)
@@ -1231,8 +1404,9 @@ async def replace_file_block(
     old_filename = block.filename
 
     # Remaining quota excludes the old file's contribution, since we're replacing it.
-    per_session_remaining = MAX_SESSION_BYTES - (session.total_bytes - old_bytes)
-    effective_cap = min(MAX_FILE_SIZE, per_session_remaining)
+    per_session_remaining = MAX_SESSION_BYTES - (session.committed_bytes() - old_bytes)
+    effective_cap = max(0, min(MAX_FILE_SIZE, per_session_remaining))
+    session.reserved_bytes += effective_cap
 
     raw_suffix = Path(file.filename or "").suffix
     safe_suffix = "".join(c for c in raw_suffix if c.isalnum() or c in "._-")[:32]
@@ -1256,13 +1430,13 @@ async def replace_file_block(
                     break
                 await f.write(chunk)
     except Exception:
-        if tmp_path.exists():
-            tmp_path.unlink()
+        tmp_path.unlink(missing_ok=True)
         raise
+    finally:
+        session.reserved_bytes -= effective_cap
 
     if overflow:
-        if tmp_path.exists():
-            tmp_path.unlink()
+        tmp_path.unlink(missing_ok=True)
         message = (
             f"File too large. Max size: {MAX_FILE_SIZE} bytes"
             if bytes_written > MAX_FILE_SIZE
@@ -1271,16 +1445,17 @@ async def replace_file_block(
         return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
 
     if old_filename and old_filename != safe_filename:
-        old_path = session.session_dir / old_filename
-        if old_path.exists():
-            old_path.unlink()
+        (session.session_dir / old_filename).unlink(missing_ok=True)
 
     os.replace(tmp_path, file_path)
 
     block.filename = safe_filename
     block.original_filename = file.filename
+    block.size = bytes_written
     session.block_bytes[block_id] = bytes_written
     session.total_bytes = session.total_bytes - old_bytes + bytes_written
+    # Raw links point at a snapshot of the old file; revoke them on replace.
+    purge_raw_links_for_block(connection_id, block_id)
     session.update_activity()
 
     await session.broadcast({
@@ -1295,8 +1470,8 @@ async def replace_file_block(
     )
 
 
-@app.delete(
-    "/api/v2/block/delete",
+@router.delete(
+    "/block/delete",
     summary="Delete Block",
     description="Delete a text or file block from the session"
 )
@@ -1317,7 +1492,7 @@ async def delete_block(request: DeleteBlockRequest):
 
     session = sessions[connection_id]
 
-    if request.user_id not in session.users:
+    if session.member_id(request.user_id) is None:
         return api_response(
             HTTPStatus.FORBIDDEN,
             "User not in session"
@@ -1344,17 +1519,18 @@ async def delete_block(request: DeleteBlockRequest):
     )
 
 
-@app.get(
-    "/api/v2/block/download/{connection_id}/{block_id}",
+@router.get(
+    "/block/download/{connection_id}/{block_id}",
     summary="Download Block",
     description="Download a text or file block (encrypted)"
 )
-async def download_block(connection_id: str, block_id: str, user_id: str):
+async def download_block(connection_id: str, block_id: str, request: Request):
     """
     Stream a block's encrypted content. The caller must be a session member.
 
-    The response uses ``application/octet-stream`` so browsers don't try to
-    sniff or render what is actually opaque ciphertext.
+    Authenticates via ``Authorization: Bearer <token>``. The response uses
+    ``application/octet-stream`` so browsers don't try to sniff or render what
+    is actually opaque ciphertext.
     """
     connection_id = connection_id.lower()
 
@@ -1363,7 +1539,7 @@ async def download_block(connection_id: str, block_id: str, user_id: str):
 
     session = sessions[connection_id]
 
-    if not session.has_member(user_id):
+    if session.member_id(bearer_token(request)) is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     block = session.blocks.get(block_id)
@@ -1400,8 +1576,8 @@ async def download_block(connection_id: str, block_id: str, user_id: str):
 # --- Raw link endpoints ---
 
 
-@app.post(
-    "/api/v2/raw/text",
+@router.post(
+    "/raw/text",
     summary="Create Raw Text Link",
     description="Generate a public short link that serves the decrypted text"
 )
@@ -1412,10 +1588,17 @@ async def create_raw_text_link(request: CreateRawTextRequest):
         return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
-    if not session.has_member(request.user_id):
+    if session.member_id(request.user_id) is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
     if request.block_id not in session.blocks:
         return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+
+    # Raw payloads live on the same disk as everything else, so they have to be
+    # counted and capped or a member can fill the host with unlimited links.
+    content_bytes = len(request.content.encode("utf-8"))
+    quota_error = raw_link_quota_check(session, content_bytes)
+    if quota_error is not None:
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, quota_error)
 
     code = generate_raw_code(connection_id)
     if code is None:
@@ -1427,22 +1610,31 @@ async def create_raw_text_link(request: CreateRawTextRequest):
     async with aiofiles.open(raw_dir / filename, "w", encoding="utf-8") as f:
         await f.write(request.content)
 
+    now = datetime.now()
     link = RawLink(
         code=code,
         connection_id=connection_id,
         block_id=request.block_id,
         content_type="text",
         filename=filename,
-        created_at=datetime.now().isoformat(),
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(seconds=RAW_LINK_TTL_SECONDS)).isoformat(),
+        size=content_bytes,
     )
     raw_links.setdefault(connection_id, {})[code] = link
+    session.total_bytes += content_bytes
+    session.update_activity()
     mark_raw_links_dirty()
 
-    return api_response(HTTPStatus.OK, "Raw link created", {"code": code})
+    return api_response(
+        HTTPStatus.OK,
+        "Raw link created",
+        {"code": code, "expires_at": link.expires_at},
+    )
 
 
-@app.post(
-    "/api/v2/raw/file",
+@router.post(
+    "/raw/file",
     summary="Create Raw File Link",
     description="Generate a public short link that serves the decrypted file"
 )
@@ -1459,10 +1651,14 @@ async def create_raw_file_link(
         return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
-    if not session.has_member(user_id):
+    if session.member_id(user_id) is None:
         return api_response(HTTPStatus.FORBIDDEN, "User not in session")
     if block_id not in session.blocks:
         return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+
+    quota_error = raw_link_quota_check(session, 0)
+    if quota_error is not None:
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, quota_error)
 
     code = generate_raw_code(connection_id)
     if code is None:
@@ -1476,8 +1672,14 @@ async def create_raw_file_link(
     raw_dir.mkdir(exist_ok=True)
     file_path = raw_dir / filename
 
+    # Same reservation dance as block uploads: raw payloads count against the
+    # session quota, so bound them before streaming rather than after.
+    per_session_remaining = MAX_SESSION_BYTES - session.committed_bytes()
+    effective_cap = max(0, min(MAX_FILE_SIZE, per_session_remaining))
+    session.reserved_bytes += effective_cap
     chunk_size = 1024 * 1024
     bytes_written = 0
+    overflow = False
     try:
         async with aiofiles.open(file_path, "wb") as f:
             while True:
@@ -1485,17 +1687,26 @@ async def create_raw_file_link(
                 if not chunk:
                     break
                 bytes_written += len(chunk)
-                if bytes_written > MAX_FILE_SIZE:
+                if bytes_written > effective_cap:
+                    overflow = True
                     break
                 await f.write(chunk)
     except Exception:
         file_path.unlink(missing_ok=True)
         raise
+    finally:
+        session.reserved_bytes -= effective_cap
 
-    if bytes_written > MAX_FILE_SIZE:
+    if overflow:
         file_path.unlink(missing_ok=True)
-        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "File too large")
+        message = (
+            f"File too large. Max size: {MAX_FILE_SIZE} bytes"
+            if bytes_written > MAX_FILE_SIZE
+            else "Session storage quota exceeded"
+        )
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
 
+    now = datetime.now()
     link = RawLink(
         code=code,
         connection_id=connection_id,
@@ -1503,12 +1714,20 @@ async def create_raw_file_link(
         content_type="file",
         filename=filename,
         original_filename=original_filename or file.filename or "download",
-        created_at=datetime.now().isoformat(),
+        created_at=now.isoformat(),
+        expires_at=(now + timedelta(seconds=RAW_LINK_TTL_SECONDS)).isoformat(),
+        size=bytes_written,
     )
     raw_links.setdefault(connection_id, {})[code] = link
+    session.total_bytes += bytes_written
+    session.update_activity()
     mark_raw_links_dirty()
 
-    return api_response(HTTPStatus.OK, "Raw link created", {"code": code})
+    return api_response(
+        HTTPStatus.OK,
+        "Raw link created",
+        {"code": code, "expires_at": link.expires_at},
+    )
 
 
 @app.get("/r/{connection_id}/{code}")
@@ -1524,8 +1743,7 @@ async def serve_raw_link(connection_id: str, code: str):
     if not link:
         return api_response(HTTPStatus.NOT_FOUND, "Link not found")
 
-    expiry = raw_link_expiry.get(connection_id)
-    if expiry and datetime.now() > expiry:
+    if datetime.now() > datetime.fromisoformat(link.expires_at):
         return api_response(HTTPStatus.GONE, "Link expired")
 
     raw_file = RAW_DIR / connection_id / link.filename
@@ -1553,6 +1771,10 @@ async def curl_upload(connection_id: str, request: Request):
 
     Text: ``curl -d 'hello' https://host/u/SESSION_ID``
     File: ``curl -F f=@file.txt https://host/u/SESSION_ID``
+
+    Bodies are read against MAX_CURL_UPLOAD_BYTES and abandoned the moment they
+    exceed it. Reading first and checking the length afterwards let an
+    unauthenticated request of any size OOM the process.
     """
     connection_id = connection_id.lower()
 
@@ -1564,19 +1786,29 @@ async def curl_upload(connection_id: str, request: Request):
     if not session.allow_curl_upload:
         return JSONResponse(status_code=403, content={"ok": False, "error": "Curl upload is not enabled"})
 
+    # Reject anything that declares itself oversized before touching the body.
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > MAX_CURL_UPLOAD_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"ok": False, "error": f"Body too large (max {MAX_CURL_UPLOAD_BYTES} bytes)"},
+        )
+
     content_type = request.headers.get("content-type", "")
 
     if content_type.startswith("multipart/form-data"):
-        form = await request.form()
+        form = await request.form(max_part_size=MAX_CURL_UPLOAD_BYTES)
         try:
             upload = form.get("f")
             if upload is None or not hasattr(upload, "read"):
                 return JSONResponse(status_code=400, content={"ok": False, "error": "Missing file field 'f'"})
 
-            file_bytes = await upload.read()
-
-            if len(file_bytes) > MAX_FILE_SIZE:
-                return JSONResponse(status_code=413, content={"ok": False, "error": "File too large"})
+            file_bytes = await _read_capped(upload.read, MAX_CURL_UPLOAD_BYTES)
+            if file_bytes is None:
+                return JSONResponse(
+                    status_code=413,
+                    content={"ok": False, "error": f"File too large (max {MAX_CURL_UPLOAD_BYTES} bytes)"},
+                )
 
             encrypted_b64 = server_encrypt(connection_id, file_bytes)
             encrypted_payload = encrypted_b64.encode("utf-8")
@@ -1599,6 +1831,7 @@ async def curl_upload(connection_id: str, request: Request):
                 type="file",
                 filename=safe_filename,
                 original_filename=upload.filename or "upload",
+                size=len(encrypted_payload),
                 created_by="__curl__",
                 created_at=datetime.now().isoformat(),
             )
@@ -1609,7 +1842,12 @@ async def curl_upload(connection_id: str, request: Request):
         finally:
             await form.close()
     else:
-        body = await request.body()
+        body = await _read_body_capped(request, MAX_CURL_UPLOAD_BYTES)
+        if body is None:
+            return JSONResponse(
+                status_code=413,
+                content={"ok": False, "error": f"Body too large (max {MAX_CURL_UPLOAD_BYTES} bytes)"},
+            )
         if not body or not body.strip():
             return JSONResponse(status_code=400, content={"ok": False, "error": "Empty body"})
 
@@ -1629,6 +1867,7 @@ async def curl_upload(connection_id: str, request: Request):
             id=block_id,
             type="text",
             content=encrypted_b64,
+            size=content_bytes,
             created_by="__curl__",
             created_at=datetime.now().isoformat(),
         )
@@ -1676,9 +1915,18 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
         })
 
 
-@app.websocket("/ws/{connection_id}/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: str):
+@app.websocket("/ws/{connection_id}")
+async def websocket_endpoint(websocket: WebSocket, connection_id: str):
+    """Live session feed.
+
+    The member token arrives as the WebSocket subprotocol rather than in the
+    path: browsers cannot set headers on a WebSocket handshake, and a token in
+    the URL would be written to every proxy access log. The subprotocol has to
+    be echoed back on accept or the browser drops the connection.
+    """
     connection_id = connection_id.lower()
+
+    token = (websocket.headers.get("sec-websocket-protocol") or "").split(",")[0].strip()
 
     if connection_id not in sessions:
         await websocket.close(code=1008, reason="Session not found")
@@ -1686,11 +1934,12 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: 
 
     session = sessions[connection_id]
 
-    if user_id not in session.users:
+    user_id = session.member_id(token)
+    if user_id is None:
         await websocket.close(code=1008, reason="User not in session")
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol=token)
 
     # Cancel any pending eviction from a previous disconnect — the user is back.
     pending = session.pending_disconnects.pop(user_id, None)
@@ -1725,6 +1974,9 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str, user_id: 
                 _remove_user_after_grace(connection_id, user_id)
             )
 
+
+# Include the latest router (latest endpoint)
+app.include_router(router)
 
 if __name__ == "__main__":
     print(f"Starting server on {HOST}:{PORT}")
