@@ -32,7 +32,10 @@ jobs:
           find docker/frontend -mindepth 1 ! -name '.gitkeep' -delete
           cp backend/.env.example docker/backend/.env
           cp .env.example .env
-          cp frontend/public/config.example.yaml docker/frontend/config.yaml
+          # The frontend fetches /config.json and parses it as JSON (see
+          # frontend/src/utils/config.js). Shipping the YAML example meant the
+          # fetch always failed and the release fell back to the built-in default.
+          cp frontend/public/config.example.json docker/frontend/config.json
 
       - name: Copy Frontend Build
         run: |
