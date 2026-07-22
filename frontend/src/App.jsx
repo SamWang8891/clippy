@@ -1,22 +1,61 @@
 import React, {useEffect, useState} from 'react';
 import {SessionProvider, useSession} from './context/SessionContext';
 import {ToastProvider} from './context/ToastContext';
-import {ConfirmProvider} from './context/ConfirmContext';
+import {ConfirmProvider, useConfirm} from './context/ConfirmContext';
 import {SessionEntry} from './components/SessionEntry';
 import {ClipboardInterface} from './components/ClipboardInterface';
+import {getSession} from './utils/api';
 import {initConfig} from './utils/config';
 
+// The id in the URL, if the path looks like one. `/r/<id>/<code>` raw links and
+// anything else with a slash are excluded by the character class.
+function urlSessionId() {
+    const id = window.location.pathname.replace(/^\//, '').trim().toLowerCase();
+    return /^[a-z0-9]+$/.test(id) ? id : null;
+}
+
 function AppContent() {
-    const {sessionData} = useSession();
+    const {sessionData, clearSession} = useSession();
+    const confirm = useConfirm();
     const [isReady, setIsReady] = useState(false);
 
     useEffect(() => {
-        initConfig()
-            .then(() => setIsReady(true))
-            .catch((err) => {
+        (async () => {
+            try {
+                await initConfig();
+            } catch (err) {
                 console.error('Failed to initialize:', err);
-                setIsReady(true);
-            });
+            }
+            // A saved session plus a *different* id in the URL — scanning a new
+            // QR while an old session is still stored — is ambiguous. Without
+            // this the stored session always won, the URL was ignored, and the
+            // only thing the user saw was the old session reported as expired.
+            const newId = urlSessionId();
+            if (sessionData && newId && newId !== sessionData.connection_id) {
+                const oldId = sessionData.connection_id;
+                const oldAlive = await getSession(oldId, sessionData.user_id).then(() => true, () => false);
+                const shown = oldAlive ? <code>{oldId}</code> : <s><code>{oldId}</code></s>;
+                const goNew = await confirm({
+                    title: 'Open the new connection?',
+                    message: (
+                        <>
+                            You already have connection {shown}{oldAlive ? '' : ' open but expired'}.
+                            {' '}Open <code>{newId}</code> instead?
+                        </>
+                    ),
+                    confirmText: 'Open new',
+                    cancelText: 'Stay',
+                    confirmStyle: 'primary',
+                });
+                if (goNew) {
+                    clearSession(); // SessionEntry joins from the URL on mount
+                } else {
+                    window.history.replaceState({}, '', `/${oldId}`);
+                }
+            }
+            setIsReady(true);
+        })();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     if (!isReady) {
