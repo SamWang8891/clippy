@@ -40,6 +40,8 @@ export default [
                 requestAnimationFrame: 'readonly',
                 cancelAnimationFrame: 'readonly',
                 getComputedStyle: 'readonly',
+                // Injected at build time by vite.config.js `define`.
+                __APP_VERSION__: 'readonly',
             },
         },
         plugins: {

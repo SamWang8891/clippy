@@ -21,16 +21,12 @@ jobs:
           backend_toml=$(grep -Po '(?<=^version = ")[^"]+' backend/pyproject.toml)
           backend_app=$(grep -Po "(?<=version=\")[^\"]+" backend/app.py)
           frontend_pkg=$(node -p "require('./frontend/package.json').version")
-          menu_jsx=$(grep -Po "(?<=APP_VERSION = 'v)[^']+" frontend/src/components/Menu.jsx)
-          app_jsx=$(grep -Po '(?<=Clippy v)[0-9]+\.[0-9]+\.[0-9]+' frontend/src/App.jsx)
           readme_en=$(grep -Po '(?<=Version-v)[0-9]+\.[0-9]+\.[0-9]+' README.md)
           readme_tw=$(grep -Po '(?<=Version-v)[0-9]+\.[0-9]+\.[0-9]+' README.zh-TW.md)
 
           echo "backend_toml=$backend_toml"
           echo "backend_app=$backend_app"
           echo "frontend_pkg=$frontend_pkg"
-          echo "menu_jsx=$menu_jsx"
-          echo "app_jsx=$app_jsx"
           echo "readme_en=$readme_en"
           echo "readme_tw=$readme_tw"
 
@@ -38,16 +34,12 @@ jobs:
 
           if [ "$backend_toml" != "$backend_app" ] || \
              [ "$backend_toml" != "$frontend_pkg" ] || \
-             [ "$backend_toml" != "$menu_jsx" ] || \
-             [ "$backend_toml" != "$app_jsx" ] || \
              [ "$backend_toml" != "$readme_en" ] || \
              [ "$backend_toml" != "$readme_tw" ]; then
             echo "::error::Version mismatch detected!"
             echo "  backend/pyproject.toml: $backend_toml"
             echo "  backend/app.py:         $backend_app"
             echo "  frontend/package.json:  $frontend_pkg"
-            echo "  Menu.jsx:               $menu_jsx"
-            echo "  App.jsx:                $app_jsx"
             echo "  README.md:              $readme_en"
             echo "  README.zh-TW.md:        $readme_tw"
             exit 1
