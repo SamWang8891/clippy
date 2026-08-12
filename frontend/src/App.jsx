@@ -37,7 +37,10 @@ function AppContent() {
     // than quietly taking over the route.
     const pathId = urlSessionId();
     const inSession = Boolean(sessionData && pathId === sessionData.connection_id);
-    const resumeId = !pathId && sessionData ? sessionData.connection_id : null;
+    // Offered whenever the stored session is not the one on screen, not only at
+    // `/`. Following a friend's link to a session that has since expired left
+    // the entry page with an error and no way back to the session still held.
+    const resumeId = !inSession && sessionData ? sessionData.connection_id : null;
 
     if (!isReady) {
         return (

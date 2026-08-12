@@ -114,7 +114,9 @@ export function SessionEntry() {
             setSessionId(urlSessionId);
             setLoading(true);
             setError('');
-            joinSession(urlSessionId, null)
+            // Arriving by QR or a shared link is the common way in, and it used
+            // to be the one path that ignored the remembered name.
+            joinSession(urlSessionId, readStoredName() || null)
                 .then((data) => {
                     syncUrl(data.connection_id);
                     setSessionData(data);
