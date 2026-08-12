@@ -63,12 +63,16 @@ const IMAGE_MIME_BY_EXT = {
     avif: 'image/avif',
     bmp: 'image/bmp',
     ico: 'image/x-icon',
-    svg: 'image/svg+xml',
+    // No svg: an <img> will not run it, but a member could still open the
+    // object URL as a document on this origin, and a preview is not worth
+    // leaving that question open.
 };
 // A thumbnail costs a full download plus a full decrypt in the tab, so past
-// this size the download button is the better deal. Raise it together with
-// lazy loading (IntersectionObserver) if rooms full of large images show up.
+// this size the download button is the better deal.
 const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
+// Start a little before the block is on screen, so scrolling still feels like
+// the images were already there.
+const PREVIEW_ROOT_MARGIN = '300px';
 
 function imageMimeFor(block) {
     if (block.type !== 'file') return null;
@@ -138,6 +142,8 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
     const [isReplacing, setIsReplacing] = useState(false);
     const [isGeneratingRaw, setIsGeneratingRaw] = useState(false);
     const [previewUrl, setPreviewUrl] = useState('');
+    const [isPreviewVisible, setIsPreviewVisible] = useState(false);
+    const articleRef = useRef(null);
     const fileInputRef = useRef(null);
     const toast = useToast();
 
@@ -161,8 +167,32 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
 
     const imageMime = useMemo(() => imageMimeFor(block), [block]);
 
+    // Previews wait until the block is nearly on screen. Loading every one on
+    // mount meant a room full of image blocks downloaded and AES-GCM-decrypted
+    // all of them at once — a member could fill a session with them and take
+    // every other tab down on join.
     useEffect(() => {
-        if (!imageMime || block.size > IMAGE_PREVIEW_MAX_BYTES) return undefined;
+        if (!imageMime || isPreviewVisible) return undefined;
+        const element = articleRef.current;
+        if (!element || typeof window.IntersectionObserver === 'undefined') {
+            setIsPreviewVisible(true);
+            return undefined;
+        }
+        const observer = new window.IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                setIsPreviewVisible(true);
+                observer.disconnect();
+            }
+        }, {rootMargin: PREVIEW_ROOT_MARGIN});
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [imageMime, isPreviewVisible]);
+
+    // Keyed on the block's identity and contents, not the object: every
+    // reconnect calls loadSession, which replaces all the block objects, and
+    // that re-downloaded and re-decrypted every image on screen.
+    useEffect(() => {
+        if (!imageMime || !isPreviewVisible || block.size > IMAGE_PREVIEW_MAX_BYTES) return undefined;
         let cancelled = false;
         let objectUrl = '';
 
@@ -183,7 +213,7 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
             setPreviewUrl('');
             if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
-    }, [block, imageMime, sessionId, userId]);
+    }, [block.id, block.filename, block.size, imageMime, isPreviewVisible, sessionId, userId]);
 
     const parsed = useMemo(() => parseBlockContent(decryptedContent), [decryptedContent]);
 
@@ -326,7 +356,7 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
         : rendered ? `code · ${rendered.language}` : 'text';
 
     return (
-        <article className="block">
+        <article className="block" ref={articleRef}>
             <header className="block-head">
                 <span className="block-title" title={title}>{title}</span>
                 <span className="block-meta">
