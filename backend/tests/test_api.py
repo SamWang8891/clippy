@@ -65,6 +65,33 @@ def test_custom_connection_id_is_honoured_and_validated(client):
     r = client.post("/api/v2/session/create", json={"connection_id": "../abc"})
     assert r.status_code == 400
 
+    # "lobby" is a live WebSocket route, so a session named after it would never
+    # receive an event.
+    app_module.CONNECTION_ID_LENGTH = 5
+    try:
+        r = client.post("/api/v2/session/create", json={"connection_id": "lobby"})
+        assert r.status_code == 400
+    finally:
+        app_module.CONNECTION_ID_LENGTH = len(good)
+
+
+def test_blank_names_do_not_reach_the_lobby(client):
+    r = client.post("/api/v2/session/create", json={"user_name": "   "})
+    assert r.status_code == 200
+    member = r.json()["data"]
+    assert member["user_name"].strip()
+    _publish(client, member)
+    assert _public(client)[0]["name"].strip()
+
+
+def test_toggling_visibility_to_its_current_value_is_a_no_op(client):
+    host = _create_session(client)
+    _publish(client, host)
+    listed = _public(client)
+    # Repeating it must not fan out again — it is an unauthenticated broadcast.
+    _publish(client, host)
+    assert _public(client) == listed
+
 
 def test_join_then_get_session_requires_membership(client):
     host = _create_session(client)

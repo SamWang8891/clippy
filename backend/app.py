@@ -588,8 +588,11 @@ def public_session_entries() -> list[dict]:
         {
             "connection_id": s.connection_id,
             "name": s.name,
-            "created_at": s.created_at.isoformat(),
-            "last_activity": s.last_activity.isoformat(),
+            # Stamped with the server's offset. A bare local timestamp is read
+            # by the browser as *its own* local time, so a UTC container served
+            # a UTC+8 reader a room created "8 hr ago" the moment it appeared.
+            "created_at": s.created_at.astimezone().isoformat(),
+            "last_activity": s.last_activity.astimezone().isoformat(),
         }
         for s in sessions.values()
         if s.is_public
@@ -780,6 +783,12 @@ def new_member() -> tuple[str, str]:
     return secrets.token_urlsafe(32), uuid.uuid4().hex[:12]
 
 
+# Paths under /ws that are not sessions. A session named after one would be
+# reachable over HTTP but its live socket would land on the literal route
+# registered ahead of /ws/{connection_id}, so it would never receive an event.
+RESERVED_CONNECTION_IDS = frozenset({"lobby"})
+
+
 def validate_connection_id(candidate: str) -> str | None:
     """Return None when a user-supplied id is usable, else why it is not."""
     if len(candidate) != CONNECTION_ID_LENGTH:
@@ -787,6 +796,8 @@ def validate_connection_id(candidate: str) -> str | None:
     rejected = sorted({c for c in candidate if c not in CONNECTION_ID_ALPHABET})
     if rejected:
         return f"Connection ID cannot contain: {' '.join(rejected)}"
+    if candidate in RESERVED_CONNECTION_IDS:
+        return "Connection ID is reserved"
     return None
 
 
@@ -1002,7 +1013,9 @@ async def create_session(request: CreateSessionRequest):
         )
 
     token, user_id = new_member()
-    user_name = request.user_name or generate_random_name()
+    # .strip(): a name of pure spaces is truthy, and it rendered as a blank
+    # row in the public lobby and a blank entry in the member list.
+    user_name = (request.user_name or "").strip() or generate_random_name()
 
     session = Session(connection_id, token, user_id, user_name)
     sessions[connection_id] = session
@@ -1055,7 +1068,9 @@ async def join_session(request: JoinSessionRequest):
         )
 
     token, user_id = new_member()
-    user_name = request.user_name or generate_random_name()
+    # .strip(): a name of pure spaces is truthy, and it rendered as a blank
+    # row in the public lobby and a blank entry in the member list.
+    user_name = (request.user_name or "").strip() or generate_random_name()
 
     user = session.add_user(token, user_id, user_name)
 
@@ -1303,6 +1318,12 @@ async def toggle_public(request: TogglePublicRequest):
 
     if not session.is_host_token(request.user_id):
         return api_response(HTTPStatus.FORBIDDEN, "Only host can change visibility")
+
+    if session.is_public == request.is_public:
+        # Nothing changed, so nothing to fan out. Without this, repeating the
+        # call is a free lobby-broadcast amplifier: the frames queue up in
+        # memory against any listener that has stopped reading.
+        return api_response(HTTPStatus.OK, "Visibility unchanged", {"success": True})
 
     session.is_public = request.is_public
     session.update_activity()
