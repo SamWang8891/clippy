@@ -308,6 +308,24 @@ export function ClipboardInterface() {
         };
     }, [uploadDroppedFiles]);
 
+    // Ctrl+V lands the same place a drop does. Also window-bound: a screenshot
+    // pasted with nothing focused has no other handler to reach.
+    useEffect(() => {
+        const onPaste = (e) => {
+            const files = Array.from(e.clipboardData?.files || []);
+            if (files.length === 0) return;
+            // Word and Excel put a bitmap on the clipboard next to the text.
+            // With the caret in a field, the text is what was meant.
+            const editable = e.target?.closest?.('input, textarea, [contenteditable]');
+            if (editable && e.clipboardData.getData('text')) return;
+            e.preventDefault();
+            uploadDroppedFiles(files);
+        };
+
+        window.addEventListener('paste', onPaste);
+        return () => window.removeEventListener('paste', onPaste);
+    }, [uploadDroppedFiles]);
+
     const handleReplaceFile = async (blockId, file) => {
         try {
             await replaceFileBlock(sessionData.connection_id, sessionData.user_id, blockId, file);
