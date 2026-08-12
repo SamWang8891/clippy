@@ -426,9 +426,17 @@ class Session:
         self.update_activity()
 
     def transfer_host(self, new_host_id: str):
-        """Transfer host privileges to another user in the session."""
+        """Transfer host privileges to another user in the session.
+
+        Publication does not follow the seat. Listing a room is consent given by
+        one particular person, under their name, and the seat moves on its own
+        after a 10-second network blip — so a host who slept their laptop in a
+        public room would otherwise lose the ability to unpublish it to whoever
+        happened to be next in the dict. A new host who wants it listed can say so.
+        """
         for user in self.users.values():
             user.is_host = (user.id == new_host_id)
+        self.is_public = False
         self.update_activity()
 
     def add_block(self, block: Block, byte_size: int = 0):
@@ -1183,6 +1191,7 @@ async def transfer_host(request: TransferHostRequest):
             "New host user not found"
         )
 
+    was_public = session.is_public
     session.transfer_host(request.new_host_id)
 
     # Broadcast host transfer
@@ -1190,6 +1199,10 @@ async def transfer_host(request: TransferHostRequest):
         "type": "host_transferred",
         "new_host_id": request.new_host_id
     })
+
+    if was_public:
+        await session.broadcast({"type": "public_changed", "is_public": False})
+        await broadcast_public_sessions()
 
     return api_response(
         HTTPStatus.OK,
@@ -2078,17 +2091,27 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
         return
 
     was_host = user.is_host
+    was_public = session.is_public
     session.remove_user(user_id)
 
     await session.broadcast({"type": "user_left", "user_id": user_id})
 
-    if was_host and session.users:
-        new_host_id = next(iter(session.users))
-        session.transfer_host(new_host_id)
-        await session.broadcast({
-            "type": "host_transferred",
-            "new_host_id": new_host_id,
-        })
+    if was_host:
+        if session.users:
+            new_host_id = next(iter(session.users))
+            session.transfer_host(new_host_id)  # also unpublishes — see the method
+            await session.broadcast({
+                "type": "host_transferred",
+                "new_host_id": new_host_id,
+            })
+        else:
+            # Nobody is left to hold the seat, so nobody could ever unpublish or
+            # destroy it again. An unlisted room just waits out SESSION_TIMEOUT.
+            session.is_public = False
+
+        if was_public:
+            await session.broadcast({"type": "public_changed", "is_public": False})
+            await broadcast_public_sessions()
 
 
 @app.websocket("/ws/lobby")

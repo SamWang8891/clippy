@@ -148,27 +148,90 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     listed = _public(client)
     assert [e["connection_id"] for e in listed] == [cid]
     assert listed[0]["name"] == "Alice"
-    # The label is the creator's, so a host transfer must not rename the room.
+    assert listed[0]["created_at"] and listed[0]["last_activity"]
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
+
+    # A guest cannot take it down either.
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": guest["user_id"], "is_public": False,
+    })
+    assert r.status_code == 403
+
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+    })
+    assert r.status_code == 200
+    assert _public(client) == []
+
+
+def _publish(client, member, expect=200):
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": member["connection_id"],
+        "user_id": member["user_id"],
+        "is_public": True,
+    })
+    assert r.status_code == expect, r.text
+
+
+def test_publishing_is_revoked_when_the_host_seat_moves(client):
+    """The bug this guards: a 10s network blip handed the host seat to whoever
+    joined from the lobby, and the original host could no longer unpublish or
+    destroy the room that still carried her name."""
+    import asyncio
+
+    import app as app_module
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid, name="Mallory")
+    _publish(client, host)
+    assert [e["connection_id"] for e in _public(client)] == [cid]
+
+    # Exactly what a dropped socket triggers, without waiting out the grace period.
+    app_module.DISCONNECT_GRACE_SECONDS = 0
+    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+
+    session = app_module.sessions[cid]
+    assert session.users[guest["public_id"]].is_host is True
+    assert session.is_public is False
+    assert _public(client) == []
+
+
+def test_publishing_is_revoked_when_the_last_member_leaves(client):
+    """An abandoned public room had no host token left in existence, so nobody
+    could ever unpublish or destroy it — it just sat in the lobby, readable."""
+    import asyncio
+
+    import app as app_module
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    _publish(client, host)
+
+    app_module.DISCONNECT_GRACE_SECONDS = 0
+    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+
+    assert app_module.sessions[cid].users == {}
+    assert app_module.sessions[cid].is_public is False
+    assert _public(client) == []
+
+
+def test_explicit_host_transfer_also_unpublishes(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    _publish(client, host)
+
     r = client.post("/api/v2/session/transfer_host", json={
         "connection_id": cid,
         "current_host_id": host["user_id"],
         "new_host_id": guest["public_id"],
     })
     assert r.status_code == 200
-    assert _public(client)[0]["name"] == "Alice"
-    assert listed[0]["created_at"] and listed[0]["last_activity"]
-    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
-
-    # Bob holds the session now, so taking it back down is his call, not Alice's.
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": host["user_id"], "is_public": False,
-    })
-    assert r.status_code == 403
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": guest["user_id"], "is_public": False,
-    })
-    assert r.status_code == 200
     assert _public(client) == []
+    # The new host can put it back up under their own say-so.
+    _publish(client, guest)
+    assert [e["connection_id"] for e in _public(client)] == [cid]
 
 
 def test_lobby_socket_pushes_appearances_and_disappearances(client):
