@@ -2164,8 +2164,12 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str):
             except json.JSONDecodeError:
                 continue
             if message.get("type") == "ping":
+                # Deliberately does not touch last_activity: the keepalive fires
+                # every 30s whether anyone is there or not, so refreshing on it
+                # made a forgotten open tab keep a dead session alive forever.
+                # SESSION_TIMEOUT_SECONDS is meant to measure idleness, not
+                # whether a browser is still pointed at the page.
                 await websocket.send_json({"type": "pong"})
-                session.update_activity()
     except WebSocketDisconnect:
         pass
     except Exception as e:  # noqa: BLE001 — log and clean up regardless of cause.
