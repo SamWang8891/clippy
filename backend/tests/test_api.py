@@ -34,7 +34,7 @@ def test_create_session_returns_unique_id(client):
 
 
 def test_generated_ids_avoid_confusable_characters(client):
-    """i/o/e/0/1 must never appear in an id — they are the ones users misread."""
+    """i/o/e/0/1 must never be *generated* — they are the ones users misread."""
     for _ in range(30):
         cid = _create_session(client)["connection_id"]
         assert not set(cid) & set("ioe01"), cid
@@ -52,9 +52,10 @@ def test_custom_connection_id_is_honoured_and_validated(client):
     r = client.post("/api/v2/session/create", json={"connection_id": good})
     assert r.status_code == 409
 
-    # Confusable character.
+    # A confusable character is the caller's business when they name it.
     r = client.post("/api/v2/session/create", json={"connection_id": "e" + good[1:]})
-    assert r.status_code == 400
+    assert r.status_code == 200
+    assert r.json()["data"]["connection_id"] == "e" + good[1:]
 
     # Wrong length.
     r = client.post("/api/v2/session/create", json={"connection_id": good[:-1]})
