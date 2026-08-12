@@ -67,10 +67,16 @@ function ConnectionIdField({inputId, value, sanitize, onChange, placeholder, dis
                     autoCorrect="off"
                     spellCheck="false"
                     // Nothing to remember here; keep the password managers that
-                    // a type=password field attracts out of it.
+                    // a type=password field attracts out of it. Each vendor has
+                    // its own opt-out and ignores everyone else's. None of them
+                    // covers the browser's own "save password?" prompt — there
+                    // is no supported way to decline that.
                     autoComplete="off"
                     data-1p-ignore=""
                     data-lpignore="true"
+                    data-bwignore="true"
+                    data-protonpass-ignore="true"
+                    data-form-type="other"
                 />
                 <span className="entry-code-echo" aria-hidden="true">{value}</span>
             </div>
