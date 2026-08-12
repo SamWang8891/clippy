@@ -24,6 +24,14 @@ export function SessionProvider({children}) {
     }, [sessionData]);
 
     const clearSession = () => {
+        // Cleared here as well as in the effect above: callers reload the page
+        // immediately after this, which can beat React's effect flush and leave
+        // the dead session in storage to be restored on the next load.
+        try {
+            localStorage.removeItem('clippy_session');
+        } catch {
+            /* storage disabled — the effect below is the only other writer */
+        }
         setSessionData(null);
     };
 

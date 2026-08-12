@@ -34,23 +34,28 @@ function AppContent() {
             if (sessionData && newId && newId !== sessionData.connection_id) {
                 const oldId = sessionData.connection_id;
                 const oldAlive = await getSession(oldId, sessionData.user_id).then(() => true, () => false);
-                const shown = oldAlive ? <code>{oldId}</code> : <s><code>{oldId}</code></s>;
-                const goNew = await confirm({
-                    title: 'Open the new connection?',
-                    message: (
-                        <>
-                            You already have connection {shown}{oldAlive ? '' : ' open but expired'}.
-                            {' '}Open <code>{newId}</code> instead?
-                        </>
-                    ),
-                    confirmText: 'Open new',
-                    cancelText: 'Stay',
-                    confirmStyle: 'primary',
-                });
-                if (goNew) {
+                if (!oldAlive) {
+                    // Nothing to weigh up: the stored session is gone, so the
+                    // URL wins silently rather than announcing the expiry.
                     clearSession(); // SessionEntry joins from the URL on mount
                 } else {
-                    window.history.replaceState({}, '', `/${oldId}`);
+                    const goNew = await confirm({
+                        title: 'Open the new connection?',
+                        message: (
+                            <>
+                                You already have connection <code>{oldId}</code>.
+                                {' '}Open <code>{newId}</code> instead?
+                            </>
+                        ),
+                        confirmText: 'Open new',
+                        cancelText: 'Stay',
+                        confirmStyle: 'primary',
+                    });
+                    if (goNew) {
+                        clearSession();
+                    } else {
+                        window.history.replaceState({}, '', `/${oldId}`);
+                    }
                 }
             }
             setIsReady(true);

@@ -81,25 +81,21 @@ export function ClipboardInterface() {
         }
     };
 
+    // A dead connection is not a decision the user can help with, so there is
+    // nothing to ask: drop it and land on the dashboard.
+    const goHome = useCallback(() => {
+        clearSession();
+        window.history.replaceState({}, '', '/');
+        window.location.reload();
+    }, [clearSession]);
+
     useEffect(() => {
         const validateSession = async () => {
             if (!sessionData?.connection_id) return;
             try {
                 await getSession(sessionData.connection_id, sessionData.user_id);
             } catch {
-                const shouldGoHome = await confirm({
-                    title: 'Connection expired',
-                    message: 'Your connection has expired or is no longer available. Return to the home page?',
-                    confirmText: 'Go home',
-                    cancelText: 'Stay',
-                    confirmStyle: 'primary'
-                });
-
-                if (shouldGoHome) {
-                    clearSession();
-                    window.history.pushState({}, '', '/');
-                    window.location.reload();
-                }
+                goHome();
             }
         };
 
@@ -161,20 +157,13 @@ export function ClipboardInterface() {
                 break;
 
             case 'session_destroyed':
-                showNotification('Connection destroyed');
-                setTimeout(() => {
-                    window.location.reload();
-                }, 2000);
+                goHome();
                 break;
         }
-    }, [myPublicId]);
+    }, [myPublicId, goHome]);
 
-    const handleAuthRejected = useCallback(() => {
-        toast.error('Session no longer available — returning to home.');
-        clearSession();
-        window.history.replaceState({}, '', '/');
-        setTimeout(() => window.location.reload(), 1200);
-    }, [clearSession, toast]);
+    // The socket gave up reconnecting — same treatment as an expired session.
+    const handleAuthRejected = goHome;
 
     // Passed by identity into a ref inside the hook, so re-creating it each
     // render only refreshes that ref — it never re-opens the socket.
