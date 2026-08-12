@@ -157,6 +157,25 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     assert _public(client) == []
 
 
+def test_lobby_socket_pushes_appearances_and_disappearances(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+
+    with client.websocket_connect("/ws/lobby") as ws:
+        assert ws.receive_json() == {"type": "public_sessions", "sessions": []}
+
+        client.post("/api/v2/session/toggle_public", json={
+            "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+        })
+        appeared = ws.receive_json()
+        assert [e["connection_id"] for e in appeared["sessions"]] == [cid]
+
+        client.post("/api/v2/session/toggle_public", json={
+            "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+        })
+        assert ws.receive_json()["sessions"] == []
+
+
 def test_public_listing_is_capped_and_newest_first(client):
     import app as app_module
 
