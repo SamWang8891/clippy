@@ -137,6 +137,48 @@
     text-transform: none;
 }
 
+/* The ID field is a password input so the OS leaves its IME on focus, and a
+   share code has no business being masked. Chrome ignores -webkit-text-security
+   on password inputs, but the mask dots are glyphs painted in the text colour —
+   so make that transparent and echo the value in the span underneath. Every
+   metric below has to match .entry-field input or the echo drifts off the caret. */
+.entry-code-wrap {
+    position: relative;
+}
+
+/* Two classes deep on purpose: `.entry-field input` above is more specific than
+   a lone class would be, and it would keep painting the mask dots. */
+.entry-field .entry-input-code {
+    color: transparent;
+    caret-color: var(--fg);
+}
+
+.entry-input-code::-ms-reveal,
+.entry-input-code::-webkit-credentials-auto-fill-button {
+    display: none;
+}
+
+.entry-code-echo {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    padding: 12px 14px;
+    font-family: var(--font-mono);
+    font-size: 15px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg);
+    white-space: pre;
+    pointer-events: none;
+}
+
+@media (max-width: 639px) {
+    .entry-code-echo {
+        font-size: 16px;
+    }
+}
+
 @media (max-width: 639px) {
     .entry-field input {
         font-size: 16px;

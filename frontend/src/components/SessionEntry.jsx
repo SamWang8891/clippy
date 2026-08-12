@@ -31,30 +31,49 @@ function storeName(name) {
 
 /**
  * The one connection-ID input, used by both tabs so New and Join cannot drift
- * apart. `sanitize` runs on composition end as well as on change: an IME hands
- * over its buffer without a plain input event, and dropping everything outside
- * the alphabet is what keeps a Bopomofo keyboard from typing into this field.
+ * apart.
+ *
+ * It is a password field on purpose. Nothing here is secret — that is the only
+ * control macOS and Windows drop out of a Chinese IME for, and no web API
+ * exposes that switch (`ime-mode` has been dead for years). Chrome then refuses
+ * to unmask it from CSS, so the dots are hidden by painting the text
+ * transparent and the real value is echoed by the span underneath, which mirrors
+ * the input's font, padding and letter-spacing exactly.
+ *
+ * `sanitize` runs on composition end as well as on change: it is the backstop
+ * for any browser that lets an IME compose into the field anyway.
+ *
+ * Trade-off: assistive tech announces this as a password field and will not
+ * read the characters back.
  */
 function ConnectionIdField({inputId, value, sanitize, onChange, placeholder, disabled, required}) {
     const apply = (e) => onChange(sanitize(e.target.value));
     return (
         <div className="entry-field">
             <label htmlFor={inputId}>Connection ID</label>
-            <input
-                id={inputId}
-                className="entry-input-mono"
-                type="text"
-                value={value}
-                onChange={apply}
-                onCompositionEnd={apply}
-                placeholder={placeholder}
-                required={required}
-                disabled={disabled}
-                lang="en"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck="false"
-            />
+            <div className="entry-code-wrap">
+                <input
+                    id={inputId}
+                    className="entry-input-mono entry-input-code"
+                    type="password"
+                    value={value}
+                    onChange={apply}
+                    onCompositionEnd={apply}
+                    placeholder={placeholder}
+                    required={required}
+                    disabled={disabled}
+                    lang="en"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck="false"
+                    // Nothing to remember here; keep the password managers that
+                    // a type=password field attracts out of it.
+                    autoComplete="off"
+                    data-1p-ignore=""
+                    data-lpignore="true"
+                />
+                <span className="entry-code-echo" aria-hidden="true">{value}</span>
+            </div>
         </div>
     );
 }
