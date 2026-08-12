@@ -297,3 +297,15 @@
 .block-btn.is-primary:hover:not(:disabled) {
     opacity: 0.88;
 }
+
+.block-thumb {
+    display: block;
+    max-width: min(100%, 320px);
+    max-height: 220px;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+}

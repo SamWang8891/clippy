@@ -51,6 +51,32 @@ const IconRaw = (props) => (
     </svg>
 );
 
+// Uploads are stored as opaque ciphertext with no content type, so the file
+// name is all there is to go on — and a Blob needs a real type or the browser
+// refuses to paint it.
+const IMAGE_MIME_BY_EXT = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    avif: 'image/avif',
+    bmp: 'image/bmp',
+    ico: 'image/x-icon',
+    svg: 'image/svg+xml',
+};
+// A thumbnail costs a full download plus a full decrypt in the tab, so past
+// this size the download button is the better deal. Raise it together with
+// lazy loading (IntersectionObserver) if rooms full of large images show up.
+const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
+
+function imageMimeFor(block) {
+    if (block.type !== 'file') return null;
+    const name = block.original_filename || block.filename || '';
+    const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+    return IMAGE_MIME_BY_EXT[ext] ?? null;
+}
+
 function looksLikeCode(text) {
     if (!text || text.length < 12) return false;
     return CODE_SIGNATURE.test(text);
@@ -111,6 +137,7 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
     const [isSaving, setIsSaving] = useState(false);
     const [isReplacing, setIsReplacing] = useState(false);
     const [isGeneratingRaw, setIsGeneratingRaw] = useState(false);
+    const [previewUrl, setPreviewUrl] = useState('');
     const fileInputRef = useRef(null);
     const toast = useToast();
 
@@ -131,6 +158,32 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
             });
         return () => { cancelled = true; };
     }, [block]);
+
+    const imageMime = useMemo(() => imageMimeFor(block), [block]);
+
+    useEffect(() => {
+        if (!imageMime || block.size > IMAGE_PREVIEW_MAX_BYTES) return undefined;
+        let cancelled = false;
+        let objectUrl = '';
+
+        (async () => {
+            try {
+                const ciphertext = await fetchBlockCiphertext(sessionId, block.id, userId);
+                const bytes = await decryptToBytes(ciphertext);
+                if (cancelled) return;
+                objectUrl = URL.createObjectURL(new Blob([bytes], {type: imageMime}));
+                setPreviewUrl(objectUrl);
+            } catch (err) {
+                console.error('Preview failed:', err);
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+            setPreviewUrl('');
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [block, imageMime, sessionId, userId]);
 
     const parsed = useMemo(() => parseBlockContent(decryptedContent), [decryptedContent]);
 
@@ -378,6 +431,11 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
                     ) : (
                         <pre className="block-text">{parsed.body}</pre>
                     )
+                ) : previewUrl ? (
+                    /* An <img> never executes script, so an uploaded SVG stays
+                       inert here. Deliberately not a link to the blob: opening
+                       one as a document would run it on this origin. */
+                    <img className="block-thumb" src={previewUrl} alt={title} />
                 ) : null}
             </div>
 
