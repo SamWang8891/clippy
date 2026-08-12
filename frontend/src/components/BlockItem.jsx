@@ -51,6 +51,36 @@ const IconRaw = (props) => (
     </svg>
 );
 
+// Uploads are stored as opaque ciphertext with no content type, so the file
+// name is all there is to go on — and a Blob needs a real type or the browser
+// refuses to paint it.
+const IMAGE_MIME_BY_EXT = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    avif: 'image/avif',
+    bmp: 'image/bmp',
+    ico: 'image/x-icon',
+    // No svg: an <img> will not run it, but a member could still open the
+    // object URL as a document on this origin, and a preview is not worth
+    // leaving that question open.
+};
+// A thumbnail costs a full download plus a full decrypt in the tab, so past
+// this size the download button is the better deal.
+const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
+// Start a little before the block is on screen, so scrolling still feels like
+// the images were already there.
+const PREVIEW_ROOT_MARGIN = '300px';
+
+function imageMimeFor(block) {
+    if (block.type !== 'file') return null;
+    const name = block.original_filename || block.filename || '';
+    const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+    return IMAGE_MIME_BY_EXT[ext] ?? null;
+}
+
 function looksLikeCode(text) {
     if (!text || text.length < 12) return false;
     return CODE_SIGNATURE.test(text);
@@ -101,7 +131,7 @@ function formatTime(iso) {
         d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 
-export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onReplaceFile}) {
+export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateText, onReplaceFile}) {
     const [decryptedContent, setDecryptedContent] = useState('');
     const [isDecrypting, setIsDecrypting] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -111,6 +141,9 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
     const [isSaving, setIsSaving] = useState(false);
     const [isReplacing, setIsReplacing] = useState(false);
     const [isGeneratingRaw, setIsGeneratingRaw] = useState(false);
+    const [previewUrl, setPreviewUrl] = useState('');
+    const [isPreviewVisible, setIsPreviewVisible] = useState(false);
+    const articleRef = useRef(null);
     const fileInputRef = useRef(null);
     const toast = useToast();
 
@@ -131,6 +164,56 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
             });
         return () => { cancelled = true; };
     }, [block]);
+
+    const imageMime = useMemo(() => imageMimeFor(block), [block]);
+
+    // Previews wait until the block is nearly on screen. Loading every one on
+    // mount meant a room full of image blocks downloaded and AES-GCM-decrypted
+    // all of them at once — a member could fill a session with them and take
+    // every other tab down on join.
+    useEffect(() => {
+        if (!imageMime || isPreviewVisible) return undefined;
+        const element = articleRef.current;
+        if (!element || typeof window.IntersectionObserver === 'undefined') {
+            setIsPreviewVisible(true);
+            return undefined;
+        }
+        const observer = new window.IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) {
+                setIsPreviewVisible(true);
+                observer.disconnect();
+            }
+        }, {rootMargin: PREVIEW_ROOT_MARGIN});
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, [imageMime, isPreviewVisible]);
+
+    // Keyed on the block's identity and contents, not the object: every
+    // reconnect calls loadSession, which replaces all the block objects, and
+    // that re-downloaded and re-decrypted every image on screen.
+    useEffect(() => {
+        if (!imageMime || !isPreviewVisible || block.size > IMAGE_PREVIEW_MAX_BYTES) return undefined;
+        let cancelled = false;
+        let objectUrl = '';
+
+        (async () => {
+            try {
+                const ciphertext = await fetchBlockCiphertext(sessionId, block.id, userId);
+                const bytes = await decryptToBytes(ciphertext);
+                if (cancelled) return;
+                objectUrl = URL.createObjectURL(new Blob([bytes], {type: imageMime}));
+                setPreviewUrl(objectUrl);
+            } catch (err) {
+                console.error('Preview failed:', err);
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+            setPreviewUrl('');
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+        };
+    }, [block.id, block.filename, block.size, imageMime, isPreviewVisible, sessionId, userId]);
 
     const parsed = useMemo(() => parseBlockContent(decryptedContent), [decryptedContent]);
 
@@ -273,7 +356,14 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
         : rendered ? `code · ${rendered.language}` : 'text';
 
     return (
-        <article className="block">
+        // --i staggers the entrance down the list. The view-transition name is
+        // what lets a deletion animate: the browser keeps a snapshot of this
+        // block to fade out while the ones below slide up into its place.
+        <article
+            className="block"
+            ref={articleRef}
+            style={{'--i': index, viewTransitionName: `block-${block.id}`}}
+        >
             <header className="block-head">
                 <span className="block-title" title={title}>{title}</span>
                 <span className="block-meta">
@@ -378,6 +468,11 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
                     ) : (
                         <pre className="block-text">{parsed.body}</pre>
                     )
+                ) : previewUrl ? (
+                    /* An <img> never executes script, so an uploaded SVG stays
+                       inert here. Deliberately not a link to the blob: opening
+                       one as a document would run it on this origin. */
+                    <img className="block-thumb" src={previewUrl} alt={title} />
                 ) : null}
             </div>
 

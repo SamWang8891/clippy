@@ -23,38 +23,56 @@ function authHeaders(userId) {
     return userId ? {Authorization: `Bearer ${userId}`} : {};
 }
 
+// Carries the HTTP status so callers can tell "the server said no" apart from
+// "the request never landed" — a dropped connection must not be read as a
+// session that no longer exists.
+function apiError(message, status) {
+    const error = new Error(message);
+    error.status = status;
+    return error;
+}
+
 async function handleApiResponse(response) {
     let json;
     try {
         json = await response.json();
     } catch {
-        throw new Error(`Invalid JSON response (HTTP ${response.status})`);
+        throw apiError(`Invalid JSON response (HTTP ${response.status})`, response.status);
     }
 
     if (json.status !== undefined) {
         if (json.status >= 200 && json.status < 300) {
             return json.data ?? json;
         }
-        throw new Error(json.message || 'Request failed');
+        throw apiError(json.message || 'Request failed', json.status);
     }
 
     if (!response.ok) {
-        throw new Error(json.detail || json.message || 'Request failed');
+        throw apiError(json.detail || json.message || 'Request failed', response.status);
     }
     return json;
 }
 
-export async function getConnectionIdLength() {
+/**
+ * Length and allowed characters for a connection ID, straight from the server
+ * so the client never keeps a second copy of the rule.
+ *
+ * @returns {Promise<{length: number, alphabet: string}>}
+ */
+export async function getConnectionIdRules() {
     const response = await fetch(`${getApiBase()}/session/id-length`);
     const data = await handleApiResponse(response);
-    return data.connection_id_length;
+    return {
+        length: data.connection_id_length,
+        alphabet: data.connection_id_alphabet ?? 'abcdefghijklmnopqrstuvwxyz0123456789',
+    };
 }
 
-export async function createSession(userName) {
+export async function createSession(userName, connectionId) {
     const response = await fetch(`${getApiBase()}/session/create`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({user_name: userName}),
+        body: JSON.stringify({user_name: userName, connection_id: connectionId || null}),
     });
     return handleApiResponse(response);
 }
@@ -121,6 +139,26 @@ export async function toggleCurl(sessionId, userId, allowCurlUpload) {
         }),
     });
     return handleApiResponse(response);
+}
+
+export async function toggleSessionPublic(sessionId, userId, isPublic) {
+    const response = await fetch(`${getApiBase()}/session/toggle_public`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            is_public: isPublic,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
+/** Snapshot of the public lobby; live updates come over the lobby socket. */
+export async function getPublicSessions() {
+    const response = await fetch(`${getApiBase()}/sessions/public`);
+    const data = await handleApiResponse(response);
+    return data.sessions ?? [];
 }
 
 export async function createTextBlock(sessionId, userId, content) {

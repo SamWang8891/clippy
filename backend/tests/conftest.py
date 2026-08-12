@@ -42,6 +42,10 @@ def client():
     # TestClient(app) handles lifespan startup/shutdown via context manager.
     with TestClient(app_module.app) as c:
         yield c
-    # Clean module-level state between tests so each one starts fresh.
+    # Clean module-level state between tests so each one starts fresh. The
+    # on-disk snapshot has to go too: shutdown flushes it and the next client's
+    # startup restores it, so clearing only the dicts leaks state forward.
     app_module.sessions.clear()
     app_module.raw_links.clear()
+    app_module.SESSIONS_FILE.unlink(missing_ok=True)
+    app_module.RAW_LINKS_FILE.unlink(missing_ok=True)

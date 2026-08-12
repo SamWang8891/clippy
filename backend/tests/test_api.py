@@ -33,6 +33,66 @@ def test_create_session_returns_unique_id(client):
     assert a["user_id"] != a["public_id"]
 
 
+def test_generated_ids_avoid_confusable_characters(client):
+    """i/o/e/0/1 must never be *generated* — they are the ones users misread."""
+    for _ in range(30):
+        cid = _create_session(client)["connection_id"]
+        assert not set(cid) & set("ioe01"), cid
+
+
+def test_custom_connection_id_is_honoured_and_validated(client):
+    import app as app_module
+
+    good = "z" * app_module.CONNECTION_ID_LENGTH
+    r = client.post("/api/v2/session/create", json={"connection_id": good.upper()})
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["connection_id"] == good
+
+    # Taken.
+    r = client.post("/api/v2/session/create", json={"connection_id": good})
+    assert r.status_code == 409
+
+    # A confusable character is the caller's business when they name it.
+    r = client.post("/api/v2/session/create", json={"connection_id": "e" + good[1:]})
+    assert r.status_code == 200
+    assert r.json()["data"]["connection_id"] == "e" + good[1:]
+
+    # Wrong length.
+    r = client.post("/api/v2/session/create", json={"connection_id": good[:-1]})
+    assert r.status_code == 400
+
+    # Path traversal via the id would land in the uploads dir.
+    r = client.post("/api/v2/session/create", json={"connection_id": "../abc"})
+    assert r.status_code == 400
+
+    # "lobby" is a live WebSocket route, so a session named after it would never
+    # receive an event.
+    app_module.CONNECTION_ID_LENGTH = 5
+    try:
+        r = client.post("/api/v2/session/create", json={"connection_id": "lobby"})
+        assert r.status_code == 400
+    finally:
+        app_module.CONNECTION_ID_LENGTH = len(good)
+
+
+def test_blank_names_do_not_reach_the_lobby(client):
+    r = client.post("/api/v2/session/create", json={"user_name": "   "})
+    assert r.status_code == 200
+    member = r.json()["data"]
+    assert member["user_name"].strip()
+    _publish(client, member)
+    assert _public(client)[0]["name"].strip()
+
+
+def test_toggling_visibility_to_its_current_value_is_a_no_op(client):
+    host = _create_session(client)
+    _publish(client, host)
+    listed = _public(client)
+    # Repeating it must not fan out again — it is an unauthenticated broadcast.
+    _publish(client, host)
+    assert _public(client) == listed
+
+
 def test_join_then_get_session_requires_membership(client):
     host = _create_session(client)
     cid = host["connection_id"]
@@ -85,6 +145,176 @@ def test_guest_cannot_seize_host(client):
         "current_host_id": host["user_id"],
         "new_host_id": guest["public_id"],
     }).status_code == 200
+
+
+def _public(client):
+    r = client.get("/api/v2/sessions/public")
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["sessions"]
+
+
+def test_sessions_are_private_until_the_host_publishes_them(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+
+    assert _public(client) == []
+
+    # A guest must not be able to publish someone else's session.
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": guest["user_id"], "is_public": True,
+    })
+    assert r.status_code == 403
+    assert _public(client) == []
+
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+    })
+    assert r.status_code == 200
+
+    listed = _public(client)
+    assert [e["connection_id"] for e in listed] == [cid]
+    assert listed[0]["name"] == "Alice"
+    assert listed[0]["created_at"] and listed[0]["last_activity"]
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
+
+    # A guest cannot take it down either.
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": guest["user_id"], "is_public": False,
+    })
+    assert r.status_code == 403
+
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+    })
+    assert r.status_code == 200
+    assert _public(client) == []
+
+
+def _publish(client, member, expect=200):
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": member["connection_id"],
+        "user_id": member["user_id"],
+        "is_public": True,
+    })
+    assert r.status_code == expect, r.text
+
+
+def test_publishing_is_revoked_when_the_host_seat_moves(client):
+    """The bug this guards: a 10s network blip handed the host seat to whoever
+    joined from the lobby, and the original host could no longer unpublish or
+    destroy the room that still carried her name."""
+    import asyncio
+
+    import app as app_module
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid, name="Mallory")
+    _publish(client, host)
+    assert [e["connection_id"] for e in _public(client)] == [cid]
+
+    # Exactly what a dropped socket triggers, without waiting out the grace period.
+    app_module.DISCONNECT_GRACE_SECONDS = 0
+    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+
+    session = app_module.sessions[cid]
+    assert session.users[guest["public_id"]].is_host is True
+    assert session.is_public is False
+    assert _public(client) == []
+
+
+def test_publishing_is_revoked_when_the_last_member_leaves(client):
+    """An abandoned public room had no host token left in existence, so nobody
+    could ever unpublish or destroy it — it just sat in the lobby, readable."""
+    import asyncio
+
+    import app as app_module
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    _publish(client, host)
+
+    app_module.DISCONNECT_GRACE_SECONDS = 0
+    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+
+    assert app_module.sessions[cid].users == {}
+    assert app_module.sessions[cid].is_public is False
+    assert _public(client) == []
+
+
+def test_explicit_host_transfer_also_unpublishes(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    _publish(client, host)
+
+    r = client.post("/api/v2/session/transfer_host", json={
+        "connection_id": cid,
+        "current_host_id": host["user_id"],
+        "new_host_id": guest["public_id"],
+    })
+    assert r.status_code == 200
+    assert _public(client) == []
+    # The new host can put it back up under their own say-so.
+    _publish(client, guest)
+    assert [e["connection_id"] for e in _public(client)] == [cid]
+
+
+def test_lobby_socket_pushes_appearances_and_disappearances(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+
+    with client.websocket_connect("/ws/lobby") as ws:
+        assert ws.receive_json() == {"type": "public_sessions", "sessions": []}
+
+        client.post("/api/v2/session/toggle_public", json={
+            "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+        })
+        appeared = ws.receive_json()
+        assert [e["connection_id"] for e in appeared["sessions"]] == [cid]
+
+        client.post("/api/v2/session/toggle_public", json={
+            "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+        })
+        assert ws.receive_json()["sessions"] == []
+
+
+def test_public_listing_is_capped_and_newest_first(client):
+    import app as app_module
+
+    created = []
+    for _ in range(app_module.MAX_PUBLIC_SESSIONS + 2):
+        host = _create_session(client)
+        r = client.post("/api/v2/session/toggle_public", json={
+            "connection_id": host["connection_id"],
+            "user_id": host["user_id"],
+            "is_public": True,
+        })
+        assert r.status_code == 200
+        created.append(host["connection_id"])
+
+    listed = [e["connection_id"] for e in _public(client)]
+    assert len(listed) == app_module.MAX_PUBLIC_SESSIONS
+    assert set(listed) <= set(created)
+    # Newest first, so the two oldest fell off the end.
+    assert created[-1] in listed
+    assert created[0] not in listed
+
+
+def test_destroying_a_public_session_removes_it_from_the_lobby(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+    })
+    assert _public(client)
+
+    r = client.post("/api/v2/session/destroy", json={
+        "connection_id": cid, "user_id": host["user_id"],
+    })
+    assert r.status_code == 200
+    assert _public(client) == []
 
 
 def test_text_block_length_limit_enforced(client):

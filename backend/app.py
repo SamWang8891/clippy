@@ -44,6 +44,17 @@ ALLOW_CREDENTIALS = ALLOWED_ORIGINS != ["*"]
 MAX_FILE_SIZE_GIB = float(os.getenv("MAX_UPLOAD_SIZE_GIB", "1"))
 SESSION_TIMEOUT_SECONDS = int(os.getenv("SESSION_TIMEOUT_SECONDS", "3600"))
 CONNECTION_ID_LENGTH = int(os.getenv("CONNECTION_ID_LENGTH", "6"))
+# Everything an id may contain. It becomes a directory name under UPLOAD_DIR,
+# so this set is a filesystem guard as much as a format rule.
+CONNECTION_ID_ALPHABET = string.ascii_lowercase + string.digits
+# i/o/e/0/1 are dropped from *generated* ids on purpose: they are the characters
+# people confuse on screen (i vs 1, o vs 0) or mishear when an id is read aloud
+# across Mandarin and English (e). A caller naming its own id has chosen to own
+# that risk, so the restriction stops at the generator.
+CONNECTION_ID_EXCLUDED = "ioe01"
+CONNECTION_ID_GENERATED_ALPHABET = "".join(
+    c for c in CONNECTION_ID_ALPHABET if c not in CONNECTION_ID_EXCLUDED
+)
 # Grace period before a disconnected user is removed from the session, allowing
 # brief network blips and page refreshes to reconnect without churn.
 DISCONNECT_GRACE_SECONDS = int(os.getenv("DISCONNECT_GRACE_SECONDS", "10"))
@@ -138,7 +149,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
-    version="2.0.1",
+    version="2.1.0",
     openapi_url="/api/v2/openapi.json" if ENABLE_DOCS else None,
     docs_url="/api/v2/docs" if ENABLE_DOCS else None,
     redoc_url=None,
@@ -208,11 +219,16 @@ class SessionInfo(BaseModel):
     blocks: list[Block]
     allow_join: bool
     allow_curl_upload: bool
+    is_public: bool
     host_id: str
 
 
 class CreateSessionRequest(BaseModel):
     user_name: str | None = Field(default=None, max_length=64)
+    # Optional vanity id. Validated against CONNECTION_ID_ALPHABET before use —
+    # it ends up as a directory name under UPLOAD_DIR, so nothing outside
+    # [a-z0-9] may ever reach the filesystem.
+    connection_id: str | None = Field(default=None, max_length=64)
 
 
 class JoinSessionRequest(BaseModel):
@@ -266,6 +282,12 @@ class ToggleCurlRequest(BaseModel):
     allow_curl_upload: bool
 
 
+class TogglePublicRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    is_public: bool
+
+
 class RawLink(BaseModel):
     code: str
     connection_id: str
@@ -306,6 +328,10 @@ class Session:
     def __init__(self, connection_id: str, host_token: str, host_id: str, host_name: str):
         """Initialize a new session with a host user."""
         self.connection_id = connection_id
+        # Lobby label, fixed at creation. Tracking the current host instead made
+        # a listed room rename itself on a host transfer and fall back to a
+        # placeholder once everyone had left.
+        self.name = host_name
         self.users: dict[str, User] = {
             host_id: User(id=host_id, name=host_name, is_host=True)
         }
@@ -319,6 +345,11 @@ class Session:
         self.reserved_bytes = 0
         self.allow_join = True
         self.allow_curl_upload = False
+        # Private until the host says otherwise: publishing a session publishes
+        # its connection id, which is also the KDF input, so anyone reading the
+        # lobby can read the content. That has to be a deliberate act.
+        self.is_public = False
+        self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.websockets: dict[str, set[WebSocket]] = {}
         # Pending eviction tasks keyed by public user id so reconnects can cancel them.
@@ -349,6 +380,10 @@ class Session:
         """Update the last activity timestamp to prevent session timeout."""
         self.last_activity = datetime.now()
         mark_sessions_dirty()
+        if self.is_public:
+            # Coalesced into the periodic flush: activity fires on every
+            # keystroke-sized action, and the lobby only shows it as a timestamp.
+            mark_lobby_dirty()
 
     def is_expired(self) -> bool:
         """Check if session has exceeded the timeout period."""
@@ -391,9 +426,17 @@ class Session:
         self.update_activity()
 
     def transfer_host(self, new_host_id: str):
-        """Transfer host privileges to another user in the session."""
+        """Transfer host privileges to another user in the session.
+
+        Publication does not follow the seat. Listing a room is consent given by
+        one particular person, under their name, and the seat moves on its own
+        after a 10-second network blip — so a host who slept their laptop in a
+        public room would otherwise lose the ability to unpublish it to whoever
+        happened to be next in the dict. A new host who wants it listed can say so.
+        """
         for user in self.users.values():
             user.is_host = (user.id == new_host_id)
+        self.is_public = False
         self.update_activity()
 
     def add_block(self, block: Block, byte_size: int = 0):
@@ -441,12 +484,15 @@ class Session:
         """Serialize persistable session state. Sockets and tasks are runtime-only."""
         return {
             "connection_id": self.connection_id,
+            "name": self.name,
             "users": {uid: u.model_dump() for uid, u in self.users.items()},
             "tokens": self.tokens,
             "blocks": {bid: b.model_dump() for bid, b in self.blocks.items()},
             "block_bytes": self.block_bytes,
             "allow_join": self.allow_join,
             "allow_curl_upload": self.allow_curl_upload,
+            "is_public": self.is_public,
+            "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
         }
 
@@ -455,6 +501,9 @@ class Session:
         instance = cls.__new__(cls)
         instance.connection_id = data["connection_id"]
         instance.users = {uid: User(**u) for uid, u in data.get("users", {}).items()}
+        instance.name = data.get("name") or next(
+            (u.name for u in instance.users.values() if u.is_host), "Clippy"
+        )
         # Drop tokens pointing at users that no longer exist.
         instance.tokens = {
             t: uid for t, uid in data.get("tokens", {}).items() if uid in instance.users
@@ -465,7 +514,13 @@ class Session:
         instance.reserved_bytes = 0
         instance.allow_join = data.get("allow_join", True)
         instance.allow_curl_upload = data.get("allow_curl_upload", False)
+        instance.is_public = data.get("is_public", False)
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
+        # Snapshots written before created_at existed fall back to the last
+        # activity rather than "now", which would reshuffle the lobby on restart.
+        instance.created_at = datetime.fromisoformat(
+            data.get("created_at") or data["last_activity"]
+        )
         instance.websockets = {}
         instance.pending_disconnects = {}
         instance.session_dir = UPLOAD_DIR / instance.connection_id
@@ -514,6 +569,53 @@ def load_sessions_sync() -> None:
             logger.warning("Skipping malformed session %s: %s", sid, e)
 
 
+# Public lobby: sessions their host has chosen to publish, streamed to anyone
+# sitting on the entry page. Sockets here are unauthenticated by design — the
+# whole point is that a published session is discoverable without an id.
+MAX_PUBLIC_SESSIONS = 5
+lobby_sockets: set[WebSocket] = set()
+_lobby_dirty = False
+
+
+def mark_lobby_dirty() -> None:
+    global _lobby_dirty
+    _lobby_dirty = True
+
+
+def public_session_entries() -> list[dict]:
+    """The newest published sessions, newest first."""
+    entries = [
+        {
+            "connection_id": s.connection_id,
+            "name": s.name,
+            # Stamped with the server's offset. A bare local timestamp is read
+            # by the browser as *its own* local time, so a UTC container served
+            # a UTC+8 reader a room created "8 hr ago" the moment it appeared.
+            "created_at": s.created_at.astimezone().isoformat(),
+            "last_activity": s.last_activity.astimezone().isoformat(),
+        }
+        for s in sessions.values()
+        if s.is_public
+    ]
+    entries.sort(key=lambda e: e["created_at"], reverse=True)
+    return entries[:MAX_PUBLIC_SESSIONS]
+
+
+async def broadcast_public_sessions() -> None:
+    """Push the current lobby to every listener. Call directly whenever a
+    session appears or disappears; timestamp-only churn rides the flush loop."""
+    global _lobby_dirty
+    _lobby_dirty = False
+    if not lobby_sockets:
+        return
+    message = {"type": "public_sessions", "sessions": public_session_entries()}
+    for ws in list(lobby_sockets):
+        try:
+            await ws.send_json(message)
+        except Exception:  # noqa: BLE001 — one dead listener must not stop the rest.
+            lobby_sockets.discard(ws)
+
+
 async def persistence_loop() -> None:
     """Background task that flushes dirty flags at a fixed interval."""
     global _sessions_dirty, _raw_links_dirty
@@ -522,6 +624,8 @@ async def persistence_loop() -> None:
             await asyncio.sleep(PERSIST_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             return
+        if _lobby_dirty:
+            await broadcast_public_sessions()
         if _sessions_dirty:
             _sessions_dirty = False
             try:
@@ -679,15 +783,33 @@ def new_member() -> tuple[str, str]:
     return secrets.token_urlsafe(32), uuid.uuid4().hex[:12]
 
 
+# Paths under /ws that are not sessions. A session named after one would be
+# reachable over HTTP but its live socket would land on the literal route
+# registered ahead of /ws/{connection_id}, so it would never receive an event.
+RESERVED_CONNECTION_IDS = frozenset({"lobby"})
+
+
+def validate_connection_id(candidate: str) -> str | None:
+    """Return None when a user-supplied id is usable, else why it is not."""
+    if len(candidate) != CONNECTION_ID_LENGTH:
+        return f"Connection ID must be exactly {CONNECTION_ID_LENGTH} characters"
+    rejected = sorted({c for c in candidate if c not in CONNECTION_ID_ALPHABET})
+    if rejected:
+        return f"Connection ID cannot contain: {' '.join(rejected)}"
+    if candidate in RESERVED_CONNECTION_IDS:
+        return "Connection ID is reserved"
+    return None
+
+
 def generate_connection_id() -> str | None:
     """
-    Generate a unique connection ID using lowercase letters and digits.
+    Generate a unique connection ID from the confusion-free alphabet.
 
     Returns None only when the keyspace is genuinely exhausted; otherwise the
     capped attempt loop will find a free ID with overwhelming probability long
     before the cap is hit.
     """
-    chars = string.ascii_lowercase + string.digits
+    chars = CONNECTION_ID_GENERATED_ALPHABET
     max_possible = len(chars) ** CONNECTION_ID_LENGTH
 
     if len(sessions) >= max_possible:
@@ -772,6 +894,9 @@ async def _teardown_session(connection_id: str, reason: str):
 
     mark_sessions_dirty()
 
+    if session.is_public:
+        await broadcast_public_sessions()
+
 
 async def cleanup_expired_sessions():
     """Periodically reap sessions and stale raw links."""
@@ -833,14 +958,17 @@ async def get_connection_id_length():
     """
     Get the configured connection ID length.
 
-    Returns the length of connection IDs generated by the server.
-    Used by the client to validate session ID input.
+    Returns the length of connection IDs, plus every character one may contain,
+    so the client can filter input against the server's rule instead of keeping
+    its own copy of it. This is the *accepted* set: generated IDs are drawn from
+    a narrower one, but a caller may name an ID using any of these.
     """
     return api_response(
         HTTPStatus.OK,
         "Connection ID length retrieved",
         {
             "connection_id_length": CONNECTION_ID_LENGTH,
+            "connection_id_alphabet": CONNECTION_ID_ALPHABET,
         }
     )
 
@@ -854,12 +982,29 @@ async def create_session(request: CreateSessionRequest):
     """
     Create a new collaborative session.
 
-    Generates a unique 6-character session ID and creates the first user as the host.
-    If no user name is provided, a random name will be generated.
+    Generates a unique session ID and creates the first user as the host.
+    A caller may request its own ID; it still has to match the server's length
+    and alphabet, and must not already be taken. If no user name is provided,
+    a random name will be generated.
 
     Returns session ID, user ID, user name, and host status.
     """
-    connection_id = generate_connection_id()
+    requested_id = (request.connection_id or "").strip().lower()
+
+    if requested_id:
+        # A chosen id is guessable in a way a generated one is not, and the id
+        # is also the KDF input — that trade-off is the caller's to make. What
+        # is not negotiable is the character set: it guards the session
+        # directory path. Confusable characters are allowed here; only the
+        # generator avoids them.
+        invalid = validate_connection_id(requested_id)
+        if invalid is not None:
+            return api_response(HTTPStatus.BAD_REQUEST, invalid)
+        if requested_id in sessions:
+            return api_response(HTTPStatus.CONFLICT, "Connection ID already in use")
+        connection_id = requested_id
+    else:
+        connection_id = generate_connection_id()
 
     if connection_id is None:
         return api_response(
@@ -868,7 +1013,9 @@ async def create_session(request: CreateSessionRequest):
         )
 
     token, user_id = new_member()
-    user_name = request.user_name or generate_random_name()
+    # .strip(): a name of pure spaces is truthy, and it rendered as a blank
+    # row in the public lobby and a blank entry in the member list.
+    user_name = (request.user_name or "").strip() or generate_random_name()
 
     session = Session(connection_id, token, user_id, user_name)
     sessions[connection_id] = session
@@ -921,7 +1068,9 @@ async def join_session(request: JoinSessionRequest):
         )
 
     token, user_id = new_member()
-    user_name = request.user_name or generate_random_name()
+    # .strip(): a name of pure spaces is truthy, and it rendered as a blank
+    # row in the public lobby and a blank entry in the member list.
+    user_name = (request.user_name or "").strip() or generate_random_name()
 
     user = session.add_user(token, user_id, user_name)
 
@@ -971,6 +1120,7 @@ async def get_session(connection_id: str, request: Request):
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
         allow_curl_upload=session.allow_curl_upload,
+        is_public=session.is_public,
         host_id=next((u.id for u in session.users.values() if u.is_host), ""),
     )
 
@@ -1056,6 +1206,7 @@ async def transfer_host(request: TransferHostRequest):
             "New host user not found"
         )
 
+    was_public = session.is_public
     session.transfer_host(request.new_host_id)
 
     # Broadcast host transfer
@@ -1063,6 +1214,10 @@ async def transfer_host(request: TransferHostRequest):
         "type": "host_transferred",
         "new_host_id": request.new_host_id
     })
+
+    if was_public:
+        await session.broadcast({"type": "public_changed", "is_public": False})
+        await broadcast_public_sessions()
 
     return api_response(
         HTTPStatus.OK,
@@ -1140,6 +1295,61 @@ async def toggle_curl(request: ToggleCurlRequest):
     })
 
     return api_response(HTTPStatus.OK, "Curl upload permission updated", {"success": True})
+
+
+@router.post(
+    "/session/toggle_public",
+    summary="Toggle Public Listing",
+    description="Publish or unpublish the session on the entry page (host only)"
+)
+async def toggle_public(request: TogglePublicRequest):
+    """
+    Publish the session in the public lobby, or take it back down.
+
+    Host only, and off by default: the lobby hands out the connection id, and
+    the connection id is what derives the content key.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    if not session.is_host_token(request.user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "Only host can change visibility")
+
+    if session.is_public == request.is_public:
+        # Nothing changed, so nothing to fan out. Without this, repeating the
+        # call is a free lobby-broadcast amplifier: the frames queue up in
+        # memory against any listener that has stopped reading.
+        return api_response(HTTPStatus.OK, "Visibility unchanged", {"success": True})
+
+    session.is_public = request.is_public
+    session.update_activity()
+
+    await session.broadcast({
+        "type": "public_changed",
+        "is_public": session.is_public,
+    })
+    # Appearing and disappearing is the one thing the lobby must show at once.
+    await broadcast_public_sessions()
+
+    return api_response(HTTPStatus.OK, "Visibility updated", {"success": True})
+
+
+@router.get(
+    "/sessions/public",
+    summary="List Public Sessions",
+    description="The newest published sessions, for the entry page"
+)
+async def list_public_sessions():
+    """Snapshot of the lobby. Live updates arrive over ``/ws/lobby``."""
+    return api_response(
+        HTTPStatus.OK,
+        "Public sessions retrieved",
+        {"sessions": public_session_entries()},
+    )
 
 
 @router.post(
@@ -1902,17 +2112,58 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
         return
 
     was_host = user.is_host
+    was_public = session.is_public
     session.remove_user(user_id)
 
     await session.broadcast({"type": "user_left", "user_id": user_id})
 
-    if was_host and session.users:
-        new_host_id = next(iter(session.users))
-        session.transfer_host(new_host_id)
-        await session.broadcast({
-            "type": "host_transferred",
-            "new_host_id": new_host_id,
+    if was_host:
+        if session.users:
+            new_host_id = next(iter(session.users))
+            session.transfer_host(new_host_id)  # also unpublishes — see the method
+            await session.broadcast({
+                "type": "host_transferred",
+                "new_host_id": new_host_id,
+            })
+        else:
+            # Nobody is left to hold the seat, so nobody could ever unpublish or
+            # destroy it again. An unlisted room just waits out SESSION_TIMEOUT.
+            session.is_public = False
+
+        if was_public:
+            await session.broadcast({"type": "public_changed", "is_public": False})
+            await broadcast_public_sessions()
+
+
+@app.websocket("/ws/lobby")
+async def lobby_websocket(websocket: WebSocket):
+    """Live feed of published sessions for the entry page.
+
+    Unauthenticated on purpose — it only ever carries what a host explicitly
+    published. Registered before ``/ws/{connection_id}`` so the literal path
+    wins over the parameterised one.
+    """
+    await websocket.accept()
+    lobby_sockets.add(websocket)
+    try:
+        await websocket.send_json({
+            "type": "public_sessions",
+            "sessions": public_session_entries(),
         })
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:  # noqa: BLE001 — log and clean up regardless of cause.
+        logger.warning("Lobby WebSocket error: %s", e)
+    finally:
+        lobby_sockets.discard(websocket)
 
 
 @app.websocket("/ws/{connection_id}")
@@ -1957,8 +2208,12 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str):
             except json.JSONDecodeError:
                 continue
             if message.get("type") == "ping":
+                # Deliberately does not touch last_activity: the keepalive fires
+                # every 30s whether anyone is there or not, so refreshing on it
+                # made a forgotten open tab keep a dead session alive forever.
+                # SESSION_TIMEOUT_SECONDS is meant to measure idleness, not
+                # whether a browser is still pointed at the page.
                 await websocket.send_json({"type": "pong"})
-                session.update_activity()
     except WebSocketDisconnect:
         pass
     except Exception as e:  # noqa: BLE001 — log and clean up regardless of cause.

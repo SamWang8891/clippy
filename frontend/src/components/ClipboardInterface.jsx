@@ -3,8 +3,17 @@ import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useWebSocket} from '../hooks/useWebSocket';
-import {createTextBlock, deleteBlock, getSession, replaceFileBlock, updateTextBlock, uploadFileBlock} from '../utils/api';
+import {
+    createTextBlock,
+    deleteBlock,
+    getSession,
+    replaceFileBlock,
+    toggleSessionPublic,
+    updateTextBlock,
+    uploadFileBlock,
+} from '../utils/api';
 import {clearSessionKey, setSessionKeyFromConnectionId} from '../utils/encryption';
+import {viewTransition} from '../utils/motion';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
 import {Id} from './Id';
@@ -27,6 +36,8 @@ export function ClipboardInterface() {
     const [notification, setNotification] = useState(null);
     const [isCreating, setIsCreating] = useState(false);
     const [newBlockType, setNewBlockType] = useState('text');
+    const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+    const [pendingUploads, setPendingUploads] = useState(0);
 
     useEffect(() => {
         if (!sessionData?.connection_id) return;
@@ -42,16 +53,6 @@ export function ClipboardInterface() {
             if (cancelled) return;
             await loadSession();
         })();
-
-        // Only normalise the URL when it isn't already pointing at a *different*
-        // session. Rewriting unconditionally meant opening someone's invite link
-        // while already in a session silently snapped you back to your own.
-        const expectedUrl = `/${sessionData.connection_id}`;
-        const pathId = window.location.pathname.replace(/^\//, '').trim().toLowerCase();
-        const isForeignInvite = pathId && pathId !== sessionData.connection_id;
-        if (!isForeignInvite && window.location.pathname !== expectedUrl) {
-            window.history.replaceState({}, '', expectedUrl);
-        }
 
         return () => {
             cancelled = true;
@@ -71,25 +72,38 @@ export function ClipboardInterface() {
         }
     };
 
+    // A dead connection is not a decision the user can help with, so there is
+    // nothing to ask: drop it and land on the dashboard.
+    const goHome = useCallback(() => {
+        clearSession();
+        window.history.replaceState({}, '', '/');
+        window.location.reload();
+    }, [clearSession]);
+
+    // 403 means this member was evicted, not that the room is gone — the server
+    // drops a user ten seconds after their socket does. Keep the path so the
+    // reload rejoins from the URL instead of stranding them on an empty
+    // dashboard with the ID no longer written anywhere.
+    const rejoinFromUrl = useCallback(() => {
+        clearSession();
+        window.location.reload();
+    }, [clearSession]);
+
+    // Acting on a failed request means deciding whether the session still
+    // exists. Only the server can say; a request that never landed says nothing,
+    // and treating it as a verdict throws away a live session and its blocks.
+    const leaveOnServerVerdict = useCallback((err) => {
+        if (err?.status === 404) goHome();
+        else if (err?.status === 403) rejoinFromUrl();
+    }, [goHome, rejoinFromUrl]);
+
     useEffect(() => {
         const validateSession = async () => {
             if (!sessionData?.connection_id) return;
             try {
                 await getSession(sessionData.connection_id, sessionData.user_id);
-            } catch {
-                const shouldGoHome = await confirm({
-                    title: 'Connection expired',
-                    message: 'Your connection has expired or is no longer available. Return to the home page?',
-                    confirmText: 'Go home',
-                    cancelText: 'Stay',
-                    confirmStyle: 'primary'
-                });
-
-                if (shouldGoHome) {
-                    clearSession();
-                    window.history.pushState({}, '', '/');
-                    window.location.reload();
-                }
+            } catch (err) {
+                leaveOnServerVerdict(err);
             }
         };
 
@@ -123,7 +137,10 @@ export function ClipboardInterface() {
                 break;
 
             case 'block_deleted':
-                setBlocks((prev) => prev.filter((b) => b.id !== message.block_id));
+                // The only change here that removes something, so it is the only
+                // one worth a transition: the block fades out while the list
+                // closes the gap instead of everything below jumping up.
+                viewTransition(() => setBlocks((prev) => prev.filter((b) => b.id !== message.block_id)));
                 break;
 
             case 'block_updated':
@@ -146,21 +163,30 @@ export function ClipboardInterface() {
                 setSession((prev) => ({...prev, allow_curl_upload: message.allow_curl_upload}));
                 break;
 
+            case 'public_changed':
+                setSession((prev) => ({...prev, is_public: message.is_public}));
+                break;
+
             case 'session_destroyed':
-                showNotification('Connection destroyed');
-                setTimeout(() => {
-                    window.location.reload();
-                }, 2000);
+                goHome();
                 break;
         }
-    }, [myPublicId]);
+    }, [myPublicId, goHome]);
 
-    const handleAuthRejected = useCallback(() => {
-        toast.error('Session no longer available — returning to home.');
-        clearSession();
-        window.history.replaceState({}, '', '/');
-        setTimeout(() => window.location.reload(), 1200);
-    }, [clearSession, toast]);
+    // The socket gave up reconnecting. That looks identical whether the server
+    // turned us away or the handshake never got out of the building — a proxy
+    // conn-limit, captive wifi, a sleeping laptop — so ask over HTTP before
+    // acting. Without this, roughly fifteen seconds offline silently deleted
+    // the stored session, and anyone able to exhaust the per-IP WebSocket
+    // slots could log a neighbour out on demand.
+    const handleSocketGaveUp = useCallback(async () => {
+        try {
+            await getSession(sessionData.connection_id, sessionData.user_id);
+            window.location.reload();  // still ours — start the socket over
+        } catch (err) {
+            leaveOnServerVerdict(err);  // no status: stay put, badge reads Offline
+        }
+    }, [sessionData, leaveOnServerVerdict]);
 
     // Passed by identity into a ref inside the hook, so re-creating it each
     // render only refreshes that ref — it never re-opens the socket.
@@ -168,7 +194,7 @@ export function ClipboardInterface() {
         sessionData?.connection_id,
         sessionData?.user_id,
         handleWebSocketMessage,
-        handleAuthRejected,
+        handleSocketGaveUp,
         loadSession,
     );
 
@@ -207,6 +233,99 @@ export function ClipboardInterface() {
         }
     };
 
+    // Dropped files skip the composer entirely: they upload one after another
+    // rather than in parallel, because each one is held in memory whole while
+    // it is encrypted.
+    const uploadDroppedFiles = useCallback(async (fileList) => {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return;
+
+        // Counted as a delta, not assigned: a second drop while the first batch
+        // is still running would otherwise set the total from its own list and
+        // then zero it, hiding the overlay with uploads still in flight.
+        setPendingUploads((n) => n + files.length);
+        let uploaded = 0;
+        for (const file of files) {
+            try {
+                await uploadFileBlock(sessionData.connection_id, sessionData.user_id, file);
+                uploaded += 1;
+            } catch (err) {
+                toast.error(`Failed to upload ${file.name}: ${err.message}`);
+            }
+            setPendingUploads((n) => Math.max(0, n - 1));
+        }
+        if (uploaded > 0) {
+            toast.success(uploaded === 1 ? 'Uploaded' : `Uploaded ${uploaded} files`);
+        }
+    }, [sessionData, toast]);
+
+    // Bound to the window, not the layout: a file dropped just outside the card
+    // would otherwise be opened by the browser and navigate the session away.
+    useEffect(() => {
+        const carriesFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+        // dragenter/dragleave fire for every child element, so track depth
+        // instead of toggling — otherwise the overlay strobes as the cursor moves.
+        let depth = 0;
+
+        const onDragEnter = (e) => {
+            if (!carriesFiles(e)) return;
+            depth += 1;
+            setIsDraggingFiles(true);
+        };
+        const onDragOver = (e) => {
+            if (!carriesFiles(e)) return;
+            e.preventDefault();
+        };
+        const onDragLeave = (e) => {
+            if (!carriesFiles(e)) return;
+            depth = Math.max(0, depth - 1);
+            if (depth === 0) setIsDraggingFiles(false);
+        };
+        const onDrop = (e) => {
+            if (!carriesFiles(e)) return;
+            // Always reset first. A drop fires no matching dragleave, so this is
+            // the only place depth can return to zero — bailing out before it
+            // left the overlay painted over the page until a reload.
+            depth = 0;
+            setIsDraggingFiles(false);
+            // The composer's own drop zone runs first and calls preventDefault.
+            // That is how it claims the file; uploading here too would post it
+            // twice.
+            if (e.defaultPrevented) return;
+            e.preventDefault();
+            uploadDroppedFiles(e.dataTransfer.files);
+        };
+
+        window.addEventListener('dragenter', onDragEnter);
+        window.addEventListener('dragover', onDragOver);
+        window.addEventListener('dragleave', onDragLeave);
+        window.addEventListener('drop', onDrop);
+        return () => {
+            window.removeEventListener('dragenter', onDragEnter);
+            window.removeEventListener('dragover', onDragOver);
+            window.removeEventListener('dragleave', onDragLeave);
+            window.removeEventListener('drop', onDrop);
+        };
+    }, [uploadDroppedFiles]);
+
+    // Ctrl+V lands the same place a drop does. Also window-bound: a screenshot
+    // pasted with nothing focused has no other handler to reach.
+    useEffect(() => {
+        const onPaste = (e) => {
+            const files = Array.from(e.clipboardData?.files || []);
+            if (files.length === 0) return;
+            // Word and Excel put a bitmap on the clipboard next to the text.
+            // With the caret in a field, the text is what was meant.
+            const editable = e.target?.closest?.('input, textarea, [contenteditable]');
+            if (editable && e.clipboardData.getData('text')) return;
+            e.preventDefault();
+            uploadDroppedFiles(files);
+        };
+
+        window.addEventListener('paste', onPaste);
+        return () => window.removeEventListener('paste', onPaste);
+    }, [uploadDroppedFiles]);
+
     const handleReplaceFile = async (blockId, file) => {
         try {
             await replaceFileBlock(sessionData.connection_id, sessionData.user_id, blockId, file);
@@ -226,6 +345,16 @@ export function ClipboardInterface() {
         }
     };
 
+    const handleToggleVisibility = async () => {
+        const next = !session?.is_public;
+        try {
+            await toggleSessionPublic(sessionData.connection_id, sessionData.user_id, next);
+            toast.success(next ? 'Listed on the home page' : 'Private again');
+        } catch (err) {
+            toast.error('Failed to change visibility: ' + err.message);
+        }
+    };
+
     const handleLogoClick = async () => {
         const confirmed = await confirm({
             title: 'Leave connection',
@@ -235,11 +364,10 @@ export function ClipboardInterface() {
             confirmStyle: 'danger'
         });
 
-        if (confirmed) {
-            clearSession();
-            window.history.pushState({}, '', '/');
-            window.location.reload();
-        }
+        // goHome, not pushState: leaving used to push a history entry, so Back
+        // returned to /<id> — and now that the path decides what is open, that
+        // silently rejoined the connection the user had just left.
+        if (confirmed) goHome();
     };
 
     const currentUser = users.find((u) => u.id === myPublicId);
@@ -280,7 +408,12 @@ export function ClipboardInterface() {
                         </div>
                     )}
                     <div className="desk-id">
-                        <Id sessionData={sessionData}/>
+                        <Id
+                            sessionData={sessionData}
+                            isPublic={session?.is_public ?? false}
+                            canToggleVisibility={currentUser?.is_host ?? false}
+                            onToggleVisibility={handleToggleVisibility}
+                        />
                     </div>
                 </div>
             </header>
@@ -356,6 +489,16 @@ export function ClipboardInterface() {
                     </button>
                 )}
             </div>
+
+            {(isDraggingFiles || pendingUploads > 0) && (
+                <div className="desk-drop" role="status">
+                    <div className="desk-drop-card">
+                        {pendingUploads > 0
+                            ? `Uploading… ${pendingUploads} left`
+                            : 'Drop files to upload'}
+                    </div>
+                </div>
+            )}
 
             {notification && <Notification text={notification}/>}
         </div>
@@ -460,6 +603,9 @@ function FileUploadForm({onSubmit}) {
         }
     };
 
+    // preventDefault, not stopPropagation: the window handler reads
+    // defaultPrevented to know this drop is already claimed, and it still needs
+    // the event so it can put its own overlay away.
     const handleDrop = (e) => {
         e.preventDefault();
         setDragging(false);

@@ -1,0 +1,111 @@
+.lobby {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.lobby-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-subtle);
+}
+
+.lobby-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+.lobby-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    list-style: none;
+}
+
+/* Rooms are published and expire while the page sits open, so a row arriving
+   should read as an arrival. Removals still snap: the list is replaced wholesale
+   on every push, and holding a row on screen to animate it out would mean
+   tracking a list React has already thrown away. */
+.lobby-row {
+    animation: rise-in 260ms var(--ease) backwards;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 12px;
+    width: 100%;
+    padding: 10px 12px;
+    text-align: left;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: border-color 120ms var(--ease), background 120ms var(--ease);
+}
+
+.lobby-row:hover:not(:disabled) {
+    border-color: var(--border-strong);
+}
+
+.lobby-row:active:not(:disabled) {
+    background: var(--bg);
+}
+
+.lobby-row:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.lobby-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lobby-id {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-muted);
+    padding: 2px 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+}
+
+.lobby-meta {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 2px 14px;
+    font-size: 12px;
+    color: var(--fg-subtle);
+}
+
+.lobby-time {
+    display: inline-flex;
+    gap: 5px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Last update sits under the ID, hard against the right edge. */
+.lobby-time.is-end {
+    margin-left: auto;
+    text-align: right;
+}
+
+.lobby-label {
+    color: var(--fg-muted);
+    opacity: 0.75;
+}

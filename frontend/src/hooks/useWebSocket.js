@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import {getBackendUrl} from '../utils/config';
+import {getWebSocketUrl} from '../utils/config';
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -53,9 +53,7 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected, onRes
 
             openedThisAttempt = false;
 
-            const apiUrl = getBackendUrl();
-            const wsUrl = apiUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
-            const fullWsUrl = `${wsUrl}/ws/${sessionId}`;
+            const fullWsUrl = `${getWebSocketUrl()}/ws/${sessionId}`;
 
             // The member token goes in the subprotocol, not the path: browsers
             // can't set headers on a WS handshake, and a token in the URL lands

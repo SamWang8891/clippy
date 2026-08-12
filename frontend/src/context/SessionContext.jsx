@@ -1,4 +1,5 @@
-import React, {createContext, useContext, useEffect, useState} from 'react';
+import React, {createContext, useCallback, useContext, useEffect, useState} from 'react';
+import {viewTransition} from '../utils/motion';
 
 const SessionContext = createContext(null);
 
@@ -24,11 +25,27 @@ export function SessionProvider({children}) {
     }, [sessionData]);
 
     const clearSession = () => {
+        // Cleared here as well as in the effect above: callers reload the page
+        // immediately after this, which can beat React's effect flush and leave
+        // the dead session in storage to be restored on the next load.
+        try {
+            localStorage.removeItem('clippy_session');
+        } catch {
+            /* storage disabled — the effect below is the only other writer */
+        }
         setSessionData(null);
     };
 
+    // Landing in a session replaces the whole page, so it crossfades rather than
+    // cutting. Every way in — create, join, a shared link — sets the session
+    // here, which is why one wrapper covers all of them.
+    //
+    // Identity has to stay stable: SessionEntry lists this in an effect's deps,
+    // and a fresh function each render would re-run the auto-join from the URL.
+    const enterSession = useCallback((data) => viewTransition(() => setSessionData(data)), []);
+
     return (
-        <SessionContext.Provider value={{sessionData, setSessionData, clearSession}}>
+        <SessionContext.Provider value={{sessionData, setSessionData: enterSession, clearSession}}>
             {children}
         </SessionContext.Provider>
     );

@@ -43,3 +43,11 @@ export function getBackendUrl() {
     }
     return backendUrl;
 }
+
+/**
+ * Backend URL with the scheme swapped for WebSockets. Anchored to the scheme so
+ * a host containing "http" later in the URL is left alone.
+ */
+export function getWebSocketUrl() {
+    return getBackendUrl().replace(/^https/, 'wss').replace(/^http/, 'ws');
+}
