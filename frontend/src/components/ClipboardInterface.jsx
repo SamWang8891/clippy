@@ -35,6 +35,8 @@ export function ClipboardInterface() {
     const [notification, setNotification] = useState(null);
     const [isCreating, setIsCreating] = useState(false);
     const [newBlockType, setNewBlockType] = useState('text');
+    const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+    const [pendingUploads, setPendingUploads] = useState(0);
 
     useEffect(() => {
         if (!sessionData?.connection_id) return;
@@ -219,6 +221,72 @@ export function ClipboardInterface() {
         }
     };
 
+    // Dropped files skip the composer entirely: they upload one after another
+    // rather than in parallel, because each one is held in memory whole while
+    // it is encrypted.
+    const uploadDroppedFiles = useCallback(async (fileList) => {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return;
+
+        setPendingUploads(files.length);
+        let uploaded = 0;
+        for (const file of files) {
+            try {
+                await uploadFileBlock(sessionData.connection_id, sessionData.user_id, file);
+                uploaded += 1;
+            } catch (err) {
+                toast.error(`Failed to upload ${file.name}: ${err.message}`);
+            }
+            setPendingUploads(files.length - uploaded);
+        }
+        setPendingUploads(0);
+        if (uploaded > 0) {
+            toast.success(uploaded === 1 ? 'Uploaded' : `Uploaded ${uploaded} files`);
+        }
+    }, [sessionData, toast]);
+
+    // Bound to the window, not the layout: a file dropped just outside the card
+    // would otherwise be opened by the browser and navigate the session away.
+    useEffect(() => {
+        const carriesFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+        // dragenter/dragleave fire for every child element, so track depth
+        // instead of toggling — otherwise the overlay strobes as the cursor moves.
+        let depth = 0;
+
+        const onDragEnter = (e) => {
+            if (!carriesFiles(e)) return;
+            depth += 1;
+            setIsDraggingFiles(true);
+        };
+        const onDragOver = (e) => {
+            if (!carriesFiles(e)) return;
+            e.preventDefault();
+        };
+        const onDragLeave = (e) => {
+            if (!carriesFiles(e)) return;
+            depth = Math.max(0, depth - 1);
+            if (depth === 0) setIsDraggingFiles(false);
+        };
+        const onDrop = (e) => {
+            if (!carriesFiles(e)) return;
+            e.preventDefault();
+            depth = 0;
+            setIsDraggingFiles(false);
+            uploadDroppedFiles(e.dataTransfer.files);
+        };
+
+        window.addEventListener('dragenter', onDragEnter);
+        window.addEventListener('dragover', onDragOver);
+        window.addEventListener('dragleave', onDragLeave);
+        window.addEventListener('drop', onDrop);
+        return () => {
+            window.removeEventListener('dragenter', onDragEnter);
+            window.removeEventListener('dragover', onDragOver);
+            window.removeEventListener('dragleave', onDragLeave);
+            window.removeEventListener('drop', onDrop);
+        };
+    }, [uploadDroppedFiles]);
+
     const handleReplaceFile = async (blockId, file) => {
         try {
             await replaceFileBlock(sessionData.connection_id, sessionData.user_id, blockId, file);
@@ -384,6 +452,16 @@ export function ClipboardInterface() {
                 )}
             </div>
 
+            {(isDraggingFiles || pendingUploads > 0) && (
+                <div className="desk-drop" role="status">
+                    <div className="desk-drop-card">
+                        {pendingUploads > 0
+                            ? `Uploading… ${pendingUploads} left`
+                            : 'Drop files to upload'}
+                    </div>
+                </div>
+            )}
+
             {notification && <Notification text={notification}/>}
         </div>
     );
@@ -487,8 +565,10 @@ function FileUploadForm({onSubmit}) {
         }
     };
 
+    // stopPropagation, or the window-level drop handler uploads the file too.
     const handleDrop = (e) => {
         e.preventDefault();
+        e.stopPropagation();
         setDragging(false);
         if (isUploading) return;
         if (e.dataTransfer.files?.[0]) setFile(e.dataTransfer.files[0]);

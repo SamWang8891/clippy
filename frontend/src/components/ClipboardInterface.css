@@ -405,3 +405,30 @@
     font-family: var(--font-mono);
     color: var(--fg-subtle);
 }
+
+/* Drops are caught on the window, so the hint covers the viewport rather than
+   the card. pointer-events stays off: the composer's own drop zone has to keep
+   receiving the drop when the cursor is over it. */
+.desk-drop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    pointer-events: none;
+    background: var(--bg);
+    background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.desk-drop-card {
+    padding: 18px 26px;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--fg);
+    background: var(--bg-elev);
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
