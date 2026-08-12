@@ -3,7 +3,15 @@ import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useWebSocket} from '../hooks/useWebSocket';
-import {createTextBlock, deleteBlock, getSession, replaceFileBlock, updateTextBlock, uploadFileBlock} from '../utils/api';
+import {
+    createTextBlock,
+    deleteBlock,
+    getSession,
+    replaceFileBlock,
+    toggleSessionPublic,
+    updateTextBlock,
+    uploadFileBlock,
+} from '../utils/api';
 import {clearSessionKey, setSessionKeyFromConnectionId} from '../utils/encryption';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
@@ -146,6 +154,10 @@ export function ClipboardInterface() {
                 setSession((prev) => ({...prev, allow_curl_upload: message.allow_curl_upload}));
                 break;
 
+            case 'public_changed':
+                setSession((prev) => ({...prev, is_public: message.is_public}));
+                break;
+
             case 'session_destroyed':
                 showNotification('Connection destroyed');
                 setTimeout(() => {
@@ -226,6 +238,16 @@ export function ClipboardInterface() {
         }
     };
 
+    const handleToggleVisibility = async () => {
+        const next = !session?.is_public;
+        try {
+            await toggleSessionPublic(sessionData.connection_id, sessionData.user_id, next);
+            toast.success(next ? 'Listed on the home page' : 'Private again');
+        } catch (err) {
+            toast.error('Failed to change visibility: ' + err.message);
+        }
+    };
+
     const handleLogoClick = async () => {
         const confirmed = await confirm({
             title: 'Leave connection',
@@ -280,7 +302,12 @@ export function ClipboardInterface() {
                         </div>
                     )}
                     <div className="desk-id">
-                        <Id sessionData={sessionData}/>
+                        <Id
+                            sessionData={sessionData}
+                            isPublic={session?.is_public ?? false}
+                            canToggleVisibility={currentUser?.is_host ?? false}
+                            onToggleVisibility={handleToggleVisibility}
+                        />
                     </div>
                 </div>
             </header>

@@ -13,7 +13,27 @@ function readQrColors() {
     return {dark: fg, light: bg};
 }
 
-export function Id({sessionData}) {
+// Body plus shackle: closed sits square on the box, open swings clear of it.
+const IconLock = ({open}) => (
+    <svg
+        viewBox="0 0 16 16"
+        width="14"
+        height="14"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+    >
+        <rect x="3.25" y="7" width="9.5" height="6.25" rx="1.5" />
+        {open
+            ? <path d="M5.75 7V4.9a2.4 2.4 0 0 1 4.75-.5" />
+            : <path d="M5.75 7V4.9a2.4 2.4 0 0 1 4.8 0V7" />}
+    </svg>
+);
+
+export function Id({sessionData, isPublic = false, canToggleVisibility = false, onToggleVisibility}) {
     const [showQrPopup, setShowQrPopup] = useState(false);
     const [qrDataUrl, setQrDataUrl] = useState('');
     const [qrError, setQrError] = useState(false);
@@ -91,6 +111,21 @@ export function Id({sessionData}) {
                 <svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="currentColor" aria-hidden="true">
                     <path d="M120-520v-320h320v320H120Zm80-80h160v-160H200v160Zm-80 480v-320h320v320H120Zm80-80h160v-160H200v160Zm320-320v-320h320v320H520Zm80-80h160v-160H600v160Zm160 480v-80h80v80h-80ZM520-360v-80h80v80h-80Zm80 80v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm80 80v-80h80v80h-80Zm80-80v-80h80v80h-80Zm0-160v-80h80v80h-80Zm80 80v-80h80v80h-80Z"/>
                 </svg>
+            </button>
+            <button
+                type="button"
+                className={`id-btn ${isPublic ? 'is-public' : ''}`}
+                onClick={onToggleVisibility}
+                disabled={!canToggleVisibility}
+                aria-pressed={isPublic}
+                aria-label={isPublic ? 'Listed publicly — make private' : 'Private — list publicly'}
+                title={
+                    canToggleVisibility
+                        ? (isPublic ? 'Listed on the home page — click to hide' : 'Private — click to list on the home page')
+                        : (isPublic ? 'Listed on the home page' : 'Private')
+                }
+            >
+                <IconLock open={isPublic} />
             </button>
 
             {showQrPopup && (

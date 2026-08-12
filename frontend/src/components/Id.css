@@ -31,9 +31,19 @@
     transition: color 120ms var(--ease), border-color 120ms var(--ease);
 }
 
-.id-btn:hover {
+.id-btn:hover:not(:disabled) {
     color: var(--fg);
     border-color: var(--border-strong);
+}
+
+.id-btn:disabled {
+    cursor: default;
+}
+
+/* Public is the loud state: an unlocked room is worth noticing at a glance. */
+.id-btn.is-public {
+    color: var(--accent-live);
+    border-color: var(--accent-live);
 }
 
 .qr-popup {
