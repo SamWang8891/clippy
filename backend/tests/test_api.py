@@ -33,6 +33,38 @@ def test_create_session_returns_unique_id(client):
     assert a["user_id"] != a["public_id"]
 
 
+def test_generated_ids_avoid_confusable_characters(client):
+    """i/o/e/0/1 must never appear in an id — they are the ones users misread."""
+    for _ in range(30):
+        cid = _create_session(client)["connection_id"]
+        assert not set(cid) & set("ioe01"), cid
+
+
+def test_custom_connection_id_is_honoured_and_validated(client):
+    import app as app_module
+
+    good = "z" * app_module.CONNECTION_ID_LENGTH
+    r = client.post("/api/v2/session/create", json={"connection_id": good.upper()})
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["connection_id"] == good
+
+    # Taken.
+    r = client.post("/api/v2/session/create", json={"connection_id": good})
+    assert r.status_code == 409
+
+    # Confusable character.
+    r = client.post("/api/v2/session/create", json={"connection_id": "e" + good[1:]})
+    assert r.status_code == 400
+
+    # Wrong length.
+    r = client.post("/api/v2/session/create", json={"connection_id": good[:-1]})
+    assert r.status_code == 400
+
+    # Path traversal via the id would land in the uploads dir.
+    r = client.post("/api/v2/session/create", json={"connection_id": "../abc"})
+    assert r.status_code == 400
+
+
 def test_join_then_get_session_requires_membership(client):
     host = _create_session(client)
     cid = host["connection_id"]
