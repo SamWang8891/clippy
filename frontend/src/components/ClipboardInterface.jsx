@@ -94,8 +94,11 @@ export function ClipboardInterface() {
             if (!sessionData?.connection_id) return;
             try {
                 await getSession(sessionData.connection_id, sessionData.user_id);
-            } catch {
-                goHome();
+            } catch (err) {
+                // Only a verdict from the server counts. An offline tab or a
+                // failed fetch has no status, and throwing away a session that
+                // is still alive would cost the user their blocks.
+                if (err.status === 404 || err.status === 403) goHome();
             }
         };
 

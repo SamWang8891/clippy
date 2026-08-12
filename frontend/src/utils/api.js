@@ -23,23 +23,32 @@ function authHeaders(userId) {
     return userId ? {Authorization: `Bearer ${userId}`} : {};
 }
 
+// Carries the HTTP status so callers can tell "the server said no" apart from
+// "the request never landed" — a dropped connection must not be read as a
+// session that no longer exists.
+function apiError(message, status) {
+    const error = new Error(message);
+    error.status = status;
+    return error;
+}
+
 async function handleApiResponse(response) {
     let json;
     try {
         json = await response.json();
     } catch {
-        throw new Error(`Invalid JSON response (HTTP ${response.status})`);
+        throw apiError(`Invalid JSON response (HTTP ${response.status})`, response.status);
     }
 
     if (json.status !== undefined) {
         if (json.status >= 200 && json.status < 300) {
             return json.data ?? json;
         }
-        throw new Error(json.message || 'Request failed');
+        throw apiError(json.message || 'Request failed', json.status);
     }
 
     if (!response.ok) {
-        throw new Error(json.detail || json.message || 'Request failed');
+        throw apiError(json.detail || json.message || 'Request failed', response.status);
     }
     return json;
 }
