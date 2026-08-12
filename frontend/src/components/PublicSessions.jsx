@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useState} from 'react';
 import {getPublicSessions} from '../utils/api';
 import {getWebSocketUrl} from '../utils/config';
 import './PublicSessions.css';
@@ -33,7 +33,14 @@ function useLobby() {
 
         const connect = () => {
             if (cancelled) return;
-            socket = new WebSocket(`${getWebSocketUrl()}/ws/lobby`);
+            try {
+                socket = new WebSocket(`${getWebSocketUrl()}/ws/lobby`);
+            } catch {
+                // A lobby that cannot connect is a missing list, not a broken
+                // entry page — keep retrying quietly behind the form.
+                retryTimer = setTimeout(connect, RECONNECT_MS);
+                return;
+            }
 
             socket.onmessage = (event) => {
                 let message;
@@ -93,7 +100,6 @@ function formatRelative(iso) {
 
 export function PublicSessions({onJoin, disabled}) {
     const sessions = useLobby();
-    const joiningRef = useRef(null);
     useTick(TICK_MS);
 
     // Nothing published means nothing to show — the section itself appears and
@@ -110,11 +116,7 @@ export function PublicSessions({onJoin, disabled}) {
                             type="button"
                             className="lobby-row"
                             disabled={disabled}
-                            onClick={() => {
-                                if (joiningRef.current === entry.connection_id) return;
-                                joiningRef.current = entry.connection_id;
-                                onJoin(entry.connection_id);
-                            }}
+                            onClick={() => onJoin(entry.connection_id)}
                         >
                             <span className="lobby-name">{entry.name}</span>
                             <span className="lobby-id">{entry.connection_id}</span>
