@@ -40,8 +40,11 @@
     cursor: default;
 }
 
-/* Public is the loud state: an unlocked room is worth noticing at a glance. */
-.id-btn.is-public {
+/* Public is the loud state: an unlocked room is worth noticing at a glance.
+   Listed alongside the hover rule so state, not the cursor, decides the colour
+   — the plain .id-btn:hover selector is the more specific of the two. */
+.id-btn.is-public,
+.id-btn.is-public:hover:not(:disabled) {
     color: var(--accent-live);
     border-color: var(--accent-live);
 }

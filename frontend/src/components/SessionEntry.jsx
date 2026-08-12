@@ -171,7 +171,10 @@ export function SessionEntry() {
                             value={customId}
                             onChange={(e) => setCustomId(sanitizeCustomId(e.target.value))}
                             placeholder="Leave blank for random ID"
-                            maxLength={idRules.length}
+                            /* No maxLength: it would truncate a paste before the
+                               filter runs, so "Oi3E-x9k7m2" would land as "3x"
+                               instead of the six characters it actually holds.
+                               sanitizeCustomId does the capping. */
                             disabled={loading}
                             autoCapitalize="off"
                             autoCorrect="off"
