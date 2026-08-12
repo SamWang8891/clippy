@@ -43,6 +43,10 @@ export function Menu({session, users, currentUser, onClose}) {
         try {
             await destroySession(sessionData.connection_id, sessionData.user_id);
             clearSession();
+            // Reset the path too. Reloading with it still set raced the
+            // session_destroyed frame, and when the HTTP reply won, the tab
+            // came back up trying to join the session it had just destroyed.
+            window.history.replaceState({}, '', '/');
             window.location.reload();
         } catch (err) {
             toast.error('Failed to destroy connection: ' + err.message);

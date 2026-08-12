@@ -79,16 +79,30 @@ export function ClipboardInterface() {
         window.location.reload();
     }, [clearSession]);
 
+    // 403 means this member was evicted, not that the room is gone — the server
+    // drops a user ten seconds after their socket does. Keep the path so the
+    // reload rejoins from the URL instead of stranding them on an empty
+    // dashboard with the ID no longer written anywhere.
+    const rejoinFromUrl = useCallback(() => {
+        clearSession();
+        window.location.reload();
+    }, [clearSession]);
+
+    // Acting on a failed request means deciding whether the session still
+    // exists. Only the server can say; a request that never landed says nothing,
+    // and treating it as a verdict throws away a live session and its blocks.
+    const leaveOnServerVerdict = useCallback((err) => {
+        if (err?.status === 404) goHome();
+        else if (err?.status === 403) rejoinFromUrl();
+    }, [goHome, rejoinFromUrl]);
+
     useEffect(() => {
         const validateSession = async () => {
             if (!sessionData?.connection_id) return;
             try {
                 await getSession(sessionData.connection_id, sessionData.user_id);
             } catch (err) {
-                // Only a verdict from the server counts. An offline tab or a
-                // failed fetch has no status, and throwing away a session that
-                // is still alive would cost the user their blocks.
-                if (err.status === 404 || err.status === 403) goHome();
+                leaveOnServerVerdict(err);
             }
         };
 
@@ -155,8 +169,20 @@ export function ClipboardInterface() {
         }
     }, [myPublicId, goHome]);
 
-    // The socket gave up reconnecting — same treatment as an expired session.
-    const handleAuthRejected = goHome;
+    // The socket gave up reconnecting. That looks identical whether the server
+    // turned us away or the handshake never got out of the building — a proxy
+    // conn-limit, captive wifi, a sleeping laptop — so ask over HTTP before
+    // acting. Without this, roughly fifteen seconds offline silently deleted
+    // the stored session, and anyone able to exhaust the per-IP WebSocket
+    // slots could log a neighbour out on demand.
+    const handleSocketGaveUp = useCallback(async () => {
+        try {
+            await getSession(sessionData.connection_id, sessionData.user_id);
+            window.location.reload();  // still ours — start the socket over
+        } catch (err) {
+            leaveOnServerVerdict(err);  // no status: stay put, badge reads Offline
+        }
+    }, [sessionData, leaveOnServerVerdict]);
 
     // Passed by identity into a ref inside the hook, so re-creating it each
     // render only refreshes that ref — it never re-opens the socket.
@@ -164,7 +190,7 @@ export function ClipboardInterface() {
         sessionData?.connection_id,
         sessionData?.user_id,
         handleWebSocketMessage,
-        handleAuthRejected,
+        handleSocketGaveUp,
         loadSession,
     );
 
@@ -210,7 +236,10 @@ export function ClipboardInterface() {
         const files = Array.from(fileList || []);
         if (files.length === 0) return;
 
-        setPendingUploads(files.length);
+        // Counted as a delta, not assigned: a second drop while the first batch
+        // is still running would otherwise set the total from its own list and
+        // then zero it, hiding the overlay with uploads still in flight.
+        setPendingUploads((n) => n + files.length);
         let uploaded = 0;
         for (const file of files) {
             try {
@@ -219,9 +248,8 @@ export function ClipboardInterface() {
             } catch (err) {
                 toast.error(`Failed to upload ${file.name}: ${err.message}`);
             }
-            setPendingUploads(files.length - uploaded);
+            setPendingUploads((n) => Math.max(0, n - 1));
         }
-        setPendingUploads(0);
         if (uploaded > 0) {
             toast.success(uploaded === 1 ? 'Uploaded' : `Uploaded ${uploaded} files`);
         }
@@ -251,9 +279,16 @@ export function ClipboardInterface() {
         };
         const onDrop = (e) => {
             if (!carriesFiles(e)) return;
-            e.preventDefault();
+            // Always reset first. A drop fires no matching dragleave, so this is
+            // the only place depth can return to zero — bailing out before it
+            // left the overlay painted over the page until a reload.
             depth = 0;
             setIsDraggingFiles(false);
+            // The composer's own drop zone runs first and calls preventDefault.
+            // That is how it claims the file; uploading here too would post it
+            // twice.
+            if (e.defaultPrevented) return;
+            e.preventDefault();
             uploadDroppedFiles(e.dataTransfer.files);
         };
 
@@ -307,11 +342,10 @@ export function ClipboardInterface() {
             confirmStyle: 'danger'
         });
 
-        if (confirmed) {
-            clearSession();
-            window.history.pushState({}, '', '/');
-            window.location.reload();
-        }
+        // goHome, not pushState: leaving used to push a history entry, so Back
+        // returned to /<id> — and now that the path decides what is open, that
+        // silently rejoined the connection the user had just left.
+        if (confirmed) goHome();
     };
 
     const currentUser = users.find((u) => u.id === myPublicId);
@@ -547,10 +581,11 @@ function FileUploadForm({onSubmit}) {
         }
     };
 
-    // stopPropagation, or the window-level drop handler uploads the file too.
+    // preventDefault, not stopPropagation: the window handler reads
+    // defaultPrevented to know this drop is already claimed, and it still needs
+    // the event so it can put its own overlay away.
     const handleDrop = (e) => {
         e.preventDefault();
-        e.stopPropagation();
         setDragging(false);
         if (isUploading) return;
         if (e.dataTransfer.files?.[0]) setFile(e.dataTransfer.files[0]);
