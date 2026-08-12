@@ -1,10 +1,9 @@
 import React, {useEffect, useState} from 'react';
 import {SessionProvider, useSession} from './context/SessionContext';
 import {ToastProvider} from './context/ToastContext';
-import {ConfirmProvider, useConfirm} from './context/ConfirmContext';
+import {ConfirmProvider} from './context/ConfirmContext';
 import {SessionEntry} from './components/SessionEntry';
 import {ClipboardInterface} from './components/ClipboardInterface';
-import {getSession} from './utils/api';
 import {initConfig} from './utils/config';
 
 // The id in the URL, if the path looks like one. `/r/<id>/<code>` raw links and
@@ -15,53 +14,30 @@ function urlSessionId() {
 }
 
 function AppContent() {
-    const {sessionData, clearSession} = useSession();
-    const confirm = useConfirm();
+    const {sessionData} = useSession();
     const [isReady, setIsReady] = useState(false);
 
     useEffect(() => {
-        (async () => {
-            try {
-                await initConfig();
-            } catch (err) {
-                console.error('Failed to initialize:', err);
-            }
-            // A saved session plus a *different* id in the URL — scanning a new
-            // QR while an old session is still stored — is ambiguous. Without
-            // this the stored session always won, the URL was ignored, and the
-            // only thing the user saw was the old session reported as expired.
-            const newId = urlSessionId();
-            if (sessionData && newId && newId !== sessionData.connection_id) {
-                const oldId = sessionData.connection_id;
-                const oldAlive = await getSession(oldId, sessionData.user_id).then(() => true, () => false);
-                if (!oldAlive) {
-                    // Nothing to weigh up: the stored session is gone, so the
-                    // URL wins silently rather than announcing the expiry.
-                    clearSession(); // SessionEntry joins from the URL on mount
-                } else {
-                    const goNew = await confirm({
-                        title: 'Open the new connection?',
-                        message: (
-                            <>
-                                You already have connection <code>{oldId}</code>.
-                                {' '}Open <code>{newId}</code> instead?
-                            </>
-                        ),
-                        confirmText: 'Open new',
-                        cancelText: 'Stay',
-                        confirmStyle: 'primary',
-                    });
-                    if (goNew) {
-                        clearSession();
-                    } else {
-                        window.history.replaceState({}, '', `/${oldId}`);
-                    }
-                }
-            }
-            setIsReady(true);
-        })();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        initConfig()
+            .catch((err) => console.error('Failed to initialize:', err))
+            .finally(() => setIsReady(true));
     }, []);
+
+    // Back and forward move between connections now that the path decides what
+    // is open. Everything in the app writes history with replaceState, so this
+    // only ever fires for a navigation the user made.
+    useEffect(() => {
+        const reload = () => window.location.reload();
+        window.addEventListener('popstate', reload);
+        return () => window.removeEventListener('popstate', reload);
+    }, []);
+
+    // The address bar is the source of truth. A stored session opens only when
+    // the path already names it; at `/` it is offered as a Resume button rather
+    // than quietly taking over the route.
+    const pathId = urlSessionId();
+    const inSession = Boolean(sessionData && pathId === sessionData.connection_id);
+    const resumeId = !pathId && sessionData ? sessionData.connection_id : null;
 
     if (!isReady) {
         return (
@@ -73,10 +49,19 @@ function AppContent() {
 
     return (
         <div className="app-layout">
+            {resumeId && (
+                <button
+                    type="button"
+                    className="app-resume"
+                    onClick={() => { window.location.href = `/${resumeId}`; }}
+                >
+                    Resume <code>{resumeId}</code>
+                </button>
+            )}
             <main className="app-main">
-                {sessionData ? <ClipboardInterface/> : <SessionEntry/>}
+                {inSession ? <ClipboardInterface/> : <SessionEntry/>}
             </main>
-            {!sessionData && (
+            {!inSession && (
                 <footer className="app-footer">
                     <span className="app-footer-version">Clippy v{__APP_VERSION__}</span>
                     <a

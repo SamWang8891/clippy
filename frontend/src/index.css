@@ -134,6 +134,37 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 
+.app-resume {
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    z-index: 10;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--fg-muted);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.app-resume:hover {
+    color: var(--fg);
+    border-color: var(--border-strong);
+}
+
+.app-resume code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--fg);
+}
+
 .app-loading {
     flex: 1;
     display: flex;

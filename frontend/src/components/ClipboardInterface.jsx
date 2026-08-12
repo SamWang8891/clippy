@@ -53,16 +53,6 @@ export function ClipboardInterface() {
             await loadSession();
         })();
 
-        // Only normalise the URL when it isn't already pointing at a *different*
-        // session. Rewriting unconditionally meant opening someone's invite link
-        // while already in a session silently snapped you back to your own.
-        const expectedUrl = `/${sessionData.connection_id}`;
-        const pathId = window.location.pathname.replace(/^\//, '').trim().toLowerCase();
-        const isForeignInvite = pathId && pathId !== sessionData.connection_id;
-        if (!isForeignInvite && window.location.pathname !== expectedUrl) {
-            window.history.replaceState({}, '', expectedUrl);
-        }
-
         return () => {
             cancelled = true;
             clearSessionKey();
