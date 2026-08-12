@@ -325,6 +325,10 @@ class Session:
     def __init__(self, connection_id: str, host_token: str, host_id: str, host_name: str):
         """Initialize a new session with a host user."""
         self.connection_id = connection_id
+        # Lobby label, fixed at creation. Tracking the current host instead made
+        # a listed room rename itself on a host transfer and fall back to a
+        # placeholder once everyone had left.
+        self.name = host_name
         self.users: dict[str, User] = {
             host_id: User(id=host_id, name=host_name, is_host=True)
         }
@@ -368,10 +372,6 @@ class Session:
         if self.committed_bytes() + additional_bytes > MAX_SESSION_BYTES:
             return f"Session storage quota exceeded ({MAX_SESSION_BYTES} bytes)"
         return None
-
-    def host_name(self) -> str:
-        """Name shown for this session in the public lobby."""
-        return next((u.name for u in self.users.values() if u.is_host), "Clippy")
 
     def update_activity(self):
         """Update the last activity timestamp to prevent session timeout."""
@@ -473,6 +473,7 @@ class Session:
         """Serialize persistable session state. Sockets and tasks are runtime-only."""
         return {
             "connection_id": self.connection_id,
+            "name": self.name,
             "users": {uid: u.model_dump() for uid, u in self.users.items()},
             "tokens": self.tokens,
             "blocks": {bid: b.model_dump() for bid, b in self.blocks.items()},
@@ -489,6 +490,9 @@ class Session:
         instance = cls.__new__(cls)
         instance.connection_id = data["connection_id"]
         instance.users = {uid: User(**u) for uid, u in data.get("users", {}).items()}
+        instance.name = data.get("name") or next(
+            (u.name for u in instance.users.values() if u.is_host), "Clippy"
+        )
         # Drop tokens pointing at users that no longer exist.
         instance.tokens = {
             t: uid for t, uid in data.get("tokens", {}).items() if uid in instance.users
@@ -572,7 +576,7 @@ def public_session_entries() -> list[dict]:
     entries = [
         {
             "connection_id": s.connection_id,
-            "name": s.host_name(),
+            "name": s.name,
             "created_at": s.created_at.isoformat(),
             "last_activity": s.last_activity.isoformat(),
         }

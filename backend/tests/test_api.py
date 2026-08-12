@@ -147,11 +147,24 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     listed = _public(client)
     assert [e["connection_id"] for e in listed] == [cid]
     assert listed[0]["name"] == "Alice"
+    # The label is the creator's, so a host transfer must not rename the room.
+    r = client.post("/api/v2/session/transfer_host", json={
+        "connection_id": cid,
+        "current_host_id": host["user_id"],
+        "new_host_id": guest["public_id"],
+    })
+    assert r.status_code == 200
+    assert _public(client)[0]["name"] == "Alice"
     assert listed[0]["created_at"] and listed[0]["last_activity"]
     assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
 
+    # Bob holds the session now, so taking it back down is his call, not Alice's.
     r = client.post("/api/v2/session/toggle_public", json={
         "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+    })
+    assert r.status_code == 403
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": guest["user_id"], "is_public": False,
     })
     assert r.status_code == 200
     assert _public(client) == []
