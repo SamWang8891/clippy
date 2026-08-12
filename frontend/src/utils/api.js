@@ -44,17 +44,26 @@ async function handleApiResponse(response) {
     return json;
 }
 
-export async function getConnectionIdLength() {
+/**
+ * Length and allowed characters for a connection ID, straight from the server
+ * so the client never keeps a second copy of the rule.
+ *
+ * @returns {Promise<{length: number, alphabet: string}>}
+ */
+export async function getConnectionIdRules() {
     const response = await fetch(`${getApiBase()}/session/id-length`);
     const data = await handleApiResponse(response);
-    return data.connection_id_length;
+    return {
+        length: data.connection_id_length,
+        alphabet: data.connection_id_alphabet ?? 'abcdefghijklmnopqrstuvwxyz0123456789',
+    };
 }
 
-export async function createSession(userName) {
+export async function createSession(userName, connectionId) {
     const response = await fetch(`${getApiBase()}/session/create`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({user_name: userName}),
+        body: JSON.stringify({user_name: userName, connection_id: connectionId || null}),
     });
     return handleApiResponse(response);
 }
@@ -121,6 +130,26 @@ export async function toggleCurl(sessionId, userId, allowCurlUpload) {
         }),
     });
     return handleApiResponse(response);
+}
+
+export async function toggleSessionPublic(sessionId, userId, isPublic) {
+    const response = await fetch(`${getApiBase()}/session/toggle_public`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            is_public: isPublic,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
+/** Snapshot of the public lobby; live updates come over the lobby socket. */
+export async function getPublicSessions() {
+    const response = await fetch(`${getApiBase()}/sessions/public`);
+    const data = await handleApiResponse(response);
+    return data.sessions ?? [];
 }
 
 export async function createTextBlock(sessionId, userId, content) {
