@@ -119,6 +119,81 @@ def test_guest_cannot_seize_host(client):
     }).status_code == 200
 
 
+def _public(client):
+    r = client.get("/api/v2/sessions/public")
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["sessions"]
+
+
+def test_sessions_are_private_until_the_host_publishes_them(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+
+    assert _public(client) == []
+
+    # A guest must not be able to publish someone else's session.
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": guest["user_id"], "is_public": True,
+    })
+    assert r.status_code == 403
+    assert _public(client) == []
+
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+    })
+    assert r.status_code == 200
+
+    listed = _public(client)
+    assert [e["connection_id"] for e in listed] == [cid]
+    assert listed[0]["name"] == "Alice"
+    assert listed[0]["created_at"] and listed[0]["last_activity"]
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
+
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+    })
+    assert r.status_code == 200
+    assert _public(client) == []
+
+
+def test_public_listing_is_capped_and_newest_first(client):
+    import app as app_module
+
+    created = []
+    for _ in range(app_module.MAX_PUBLIC_SESSIONS + 2):
+        host = _create_session(client)
+        r = client.post("/api/v2/session/toggle_public", json={
+            "connection_id": host["connection_id"],
+            "user_id": host["user_id"],
+            "is_public": True,
+        })
+        assert r.status_code == 200
+        created.append(host["connection_id"])
+
+    listed = [e["connection_id"] for e in _public(client)]
+    assert len(listed) == app_module.MAX_PUBLIC_SESSIONS
+    assert set(listed) <= set(created)
+    # Newest first, so the two oldest fell off the end.
+    assert created[-1] in listed
+    assert created[0] not in listed
+
+
+def test_destroying_a_public_session_removes_it_from_the_lobby(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    client.post("/api/v2/session/toggle_public", json={
+        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+    })
+    assert _public(client)
+
+    r = client.post("/api/v2/session/destroy", json={
+        "connection_id": cid, "user_id": host["user_id"],
+    })
+    assert r.status_code == 200
+    assert _public(client) == []
+
+
 def test_text_block_length_limit_enforced(client):
     host = _create_session(client)
     payload = {

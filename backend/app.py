@@ -216,6 +216,7 @@ class SessionInfo(BaseModel):
     blocks: list[Block]
     allow_join: bool
     allow_curl_upload: bool
+    is_public: bool
     host_id: str
 
 
@@ -278,6 +279,12 @@ class ToggleCurlRequest(BaseModel):
     allow_curl_upload: bool
 
 
+class TogglePublicRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    is_public: bool
+
+
 class RawLink(BaseModel):
     code: str
     connection_id: str
@@ -331,6 +338,11 @@ class Session:
         self.reserved_bytes = 0
         self.allow_join = True
         self.allow_curl_upload = False
+        # Private until the host says otherwise: publishing a session publishes
+        # its connection id, which is also the KDF input, so anyone reading the
+        # lobby can read the content. That has to be a deliberate act.
+        self.is_public = False
+        self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.websockets: dict[str, set[WebSocket]] = {}
         # Pending eviction tasks keyed by public user id so reconnects can cancel them.
@@ -357,10 +369,18 @@ class Session:
             return f"Session storage quota exceeded ({MAX_SESSION_BYTES} bytes)"
         return None
 
+    def host_name(self) -> str:
+        """Name shown for this session in the public lobby."""
+        return next((u.name for u in self.users.values() if u.is_host), "Clippy")
+
     def update_activity(self):
         """Update the last activity timestamp to prevent session timeout."""
         self.last_activity = datetime.now()
         mark_sessions_dirty()
+        if self.is_public:
+            # Coalesced into the periodic flush: activity fires on every
+            # keystroke-sized action, and the lobby only shows it as a timestamp.
+            mark_lobby_dirty()
 
     def is_expired(self) -> bool:
         """Check if session has exceeded the timeout period."""
@@ -459,6 +479,8 @@ class Session:
             "block_bytes": self.block_bytes,
             "allow_join": self.allow_join,
             "allow_curl_upload": self.allow_curl_upload,
+            "is_public": self.is_public,
+            "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
         }
 
@@ -477,7 +499,13 @@ class Session:
         instance.reserved_bytes = 0
         instance.allow_join = data.get("allow_join", True)
         instance.allow_curl_upload = data.get("allow_curl_upload", False)
+        instance.is_public = data.get("is_public", False)
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
+        # Snapshots written before created_at existed fall back to the last
+        # activity rather than "now", which would reshuffle the lobby on restart.
+        instance.created_at = datetime.fromisoformat(
+            data.get("created_at") or data["last_activity"]
+        )
         instance.websockets = {}
         instance.pending_disconnects = {}
         instance.session_dir = UPLOAD_DIR / instance.connection_id
@@ -526,6 +554,50 @@ def load_sessions_sync() -> None:
             logger.warning("Skipping malformed session %s: %s", sid, e)
 
 
+# Public lobby: sessions their host has chosen to publish, streamed to anyone
+# sitting on the entry page. Sockets here are unauthenticated by design — the
+# whole point is that a published session is discoverable without an id.
+MAX_PUBLIC_SESSIONS = 5
+lobby_sockets: set[WebSocket] = set()
+_lobby_dirty = False
+
+
+def mark_lobby_dirty() -> None:
+    global _lobby_dirty
+    _lobby_dirty = True
+
+
+def public_session_entries() -> list[dict]:
+    """The newest published sessions, newest first."""
+    entries = [
+        {
+            "connection_id": s.connection_id,
+            "name": s.host_name(),
+            "created_at": s.created_at.isoformat(),
+            "last_activity": s.last_activity.isoformat(),
+        }
+        for s in sessions.values()
+        if s.is_public
+    ]
+    entries.sort(key=lambda e: e["created_at"], reverse=True)
+    return entries[:MAX_PUBLIC_SESSIONS]
+
+
+async def broadcast_public_sessions() -> None:
+    """Push the current lobby to every listener. Call directly whenever a
+    session appears or disappears; timestamp-only churn rides the flush loop."""
+    global _lobby_dirty
+    _lobby_dirty = False
+    if not lobby_sockets:
+        return
+    message = {"type": "public_sessions", "sessions": public_session_entries()}
+    for ws in list(lobby_sockets):
+        try:
+            await ws.send_json(message)
+        except Exception:  # noqa: BLE001 — one dead listener must not stop the rest.
+            lobby_sockets.discard(ws)
+
+
 async def persistence_loop() -> None:
     """Background task that flushes dirty flags at a fixed interval."""
     global _sessions_dirty, _raw_links_dirty
@@ -534,6 +606,8 @@ async def persistence_loop() -> None:
             await asyncio.sleep(PERSIST_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             return
+        if _lobby_dirty:
+            await broadcast_public_sessions()
         if _sessions_dirty:
             _sessions_dirty = False
             try:
@@ -794,6 +868,9 @@ async def _teardown_session(connection_id: str, reason: str):
 
     mark_sessions_dirty()
 
+    if session.is_public:
+        await broadcast_public_sessions()
+
 
 async def cleanup_expired_sessions():
     """Periodically reap sessions and stale raw links."""
@@ -1010,6 +1087,7 @@ async def get_session(connection_id: str, request: Request):
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
         allow_curl_upload=session.allow_curl_upload,
+        is_public=session.is_public,
         host_id=next((u.id for u in session.users.values() if u.is_host), ""),
     )
 
@@ -1179,6 +1257,55 @@ async def toggle_curl(request: ToggleCurlRequest):
     })
 
     return api_response(HTTPStatus.OK, "Curl upload permission updated", {"success": True})
+
+
+@router.post(
+    "/session/toggle_public",
+    summary="Toggle Public Listing",
+    description="Publish or unpublish the session on the entry page (host only)"
+)
+async def toggle_public(request: TogglePublicRequest):
+    """
+    Publish the session in the public lobby, or take it back down.
+
+    Host only, and off by default: the lobby hands out the connection id, and
+    the connection id is what derives the content key.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    if not session.is_host_token(request.user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "Only host can change visibility")
+
+    session.is_public = request.is_public
+    session.update_activity()
+
+    await session.broadcast({
+        "type": "public_changed",
+        "is_public": session.is_public,
+    })
+    # Appearing and disappearing is the one thing the lobby must show at once.
+    await broadcast_public_sessions()
+
+    return api_response(HTTPStatus.OK, "Visibility updated", {"success": True})
+
+
+@router.get(
+    "/sessions/public",
+    summary="List Public Sessions",
+    description="The newest published sessions, for the entry page"
+)
+async def list_public_sessions():
+    """Snapshot of the lobby. Live updates arrive over ``/ws/lobby``."""
+    return api_response(
+        HTTPStatus.OK,
+        "Public sessions retrieved",
+        {"sessions": public_session_entries()},
+    )
 
 
 @router.post(
@@ -1952,6 +2079,37 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
             "type": "host_transferred",
             "new_host_id": new_host_id,
         })
+
+
+@app.websocket("/ws/lobby")
+async def lobby_websocket(websocket: WebSocket):
+    """Live feed of published sessions for the entry page.
+
+    Unauthenticated on purpose — it only ever carries what a host explicitly
+    published. Registered before ``/ws/{connection_id}`` so the literal path
+    wins over the parameterised one.
+    """
+    await websocket.accept()
+    lobby_sockets.add(websocket)
+    try:
+        await websocket.send_json({
+            "type": "public_sessions",
+            "sessions": public_session_entries(),
+        })
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:  # noqa: BLE001 — log and clean up regardless of cause.
+        logger.warning("Lobby WebSocket error: %s", e)
+    finally:
+        lobby_sockets.discard(websocket)
 
 
 @app.websocket("/ws/{connection_id}")
