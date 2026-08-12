@@ -33,7 +33,7 @@ A web-based application that allows users to share text and files in real-time t
 
 Tired of sharing text / files across different computers? Try this clippy!
 
-- **Session-based sharing**: Create or join sessions using short, custom-length IDs. Pick your own ID or let the server mint one — either way `i`, `o`, `e`, `0` and `1` are left out, so an ID survives being read aloud or copied by eye
+- **Session-based sharing**: Create or join sessions using short, custom-length IDs. Server-minted IDs leave out `i`, `o`, `e`, `0` and `1`, so an ID survives being read aloud or copied by eye; name your own and any of `a-z0-9` is fair game. The ID field is a password input so the OS drops out of a Chinese IME on focus — the value stays visible
 - **Public Clippys**: Hosts can unlock a session with the padlock beside the QR code to list it on the entry page. The five newest published sessions appear there with name, ID, creation time and last update, and they appear and disappear live over a WebSocket. Everything is private until someone deliberately unlocks it
 - **Encrypted payloads**: Each session uses a 256-bit AES-GCM key derived client-side from the connection ID (SHA-256 KDF). All block content is encrypted before it leaves the browser, so the backend only ever sees ciphertext. The server issues the ID and could derive the key too — this is encrypted-at-rest and on-the-wire, not strict end-to-end against a malicious server
 - **Real-time collaboration**: See blocks appear instantly when other users create them
