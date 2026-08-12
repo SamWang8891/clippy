@@ -29,6 +29,36 @@ function storeName(name) {
     }
 }
 
+/**
+ * The one connection-ID input, used by both tabs so New and Join cannot drift
+ * apart. `sanitize` runs on composition end as well as on change: an IME hands
+ * over its buffer without a plain input event, and dropping everything outside
+ * the alphabet is what keeps a Bopomofo keyboard from typing into this field.
+ */
+function ConnectionIdField({inputId, value, sanitize, onChange, placeholder, disabled, required}) {
+    const apply = (e) => onChange(sanitize(e.target.value));
+    return (
+        <div className="entry-field">
+            <label htmlFor={inputId}>Connection ID</label>
+            <input
+                id={inputId}
+                className="entry-input-mono"
+                type="text"
+                value={value}
+                onChange={apply}
+                onCompositionEnd={apply}
+                placeholder={placeholder}
+                required={required}
+                disabled={disabled}
+                lang="en"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck="false"
+            />
+        </div>
+    );
+}
+
 export function SessionEntry() {
     const [mode, setMode] = useState('create');
     const [userName, setUserName] = useState(readStoredName);
@@ -103,10 +133,8 @@ export function SessionEntry() {
         joinById(sessionId);
     };
 
-    // A chosen ID has to be one the server will accept, so drop anything outside
-    // its alphabet as it is typed. The join field stays lenient by comparison:
-    // an ID minted before those characters were retired must still be reachable.
-    const sanitizeCustomId = (value) => value
+    // Only what the server will accept survives being typed or pasted.
+    const sanitizeId = (value) => value
         .toLowerCase()
         .split('')
         .filter((c) => idRules.alphabet.includes(c))
@@ -146,6 +174,14 @@ export function SessionEntry() {
 
             {mode === 'create' ? (
                 <form onSubmit={handleCreate} className="entry-form">
+                    <ConnectionIdField
+                        inputId="entry-custom-id"
+                        value={customId}
+                        sanitize={sanitizeId}
+                        onChange={setCustomId}
+                        placeholder={placeholder}
+                        disabled={loading}
+                    />
                     <div className="entry-field">
                         <label htmlFor="entry-name">Name <span className="entry-optional">optional</span></label>
                         <input
@@ -155,30 +191,6 @@ export function SessionEntry() {
                             onChange={(e) => setUserName(e.target.value)}
                             placeholder="Leave blank for assigned name"
                             disabled={loading}
-                        />
-                    </div>
-                    <div className="entry-field">
-                        {/* The rule lives in the label, not a hint line below it,
-                            so New and Join stay exactly the same height. */}
-                        <label htmlFor="entry-custom-id">
-                            Connection ID
-                            <span className="entry-optional">optional · no I O 0 1 E</span>
-                        </label>
-                        <input
-                            id="entry-custom-id"
-                            className="entry-input-mono"
-                            type="text"
-                            value={customId}
-                            onChange={(e) => setCustomId(sanitizeCustomId(e.target.value))}
-                            placeholder="Leave blank for random ID"
-                            /* No maxLength: it would truncate a paste before the
-                               filter runs, so "Oi3E-x9k7m2" would land as "3x"
-                               instead of the six characters it actually holds.
-                               sanitizeCustomId does the capping. */
-                            disabled={loading}
-                            autoCapitalize="off"
-                            autoCorrect="off"
-                            spellCheck="false"
                         />
                     </div>
                     <button
@@ -191,23 +203,15 @@ export function SessionEntry() {
                 </form>
             ) : (
                 <form onSubmit={handleJoin} className="entry-form">
-                    <div className="entry-field">
-                        <label htmlFor="entry-id">Connection ID</label>
-                        <input
-                            id="entry-id"
-                            className="entry-input-mono"
-                            type="text"
-                            value={sessionId}
-                            onChange={(e) => setSessionId(e.target.value.toLowerCase())}
-                            placeholder={placeholder}
-                            maxLength={idRules.length}
-                            required
-                            disabled={loading}
-                            autoCapitalize="off"
-                            autoCorrect="off"
-                            spellCheck="false"
-                        />
-                    </div>
+                    <ConnectionIdField
+                        inputId="entry-id"
+                        value={sessionId}
+                        sanitize={sanitizeId}
+                        onChange={setSessionId}
+                        placeholder={placeholder}
+                        disabled={loading}
+                        required
+                    />
                     <div className="entry-field">
                         <label htmlFor="entry-name-join">Name <span className="entry-optional">optional</span></label>
                         <input

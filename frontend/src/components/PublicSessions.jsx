@@ -125,8 +125,7 @@ export function PublicSessions({onJoin, disabled}) {
                                     <span className="lobby-label">Created:</span>
                                     {formatCreated(entry.created_at)}
                                 </span>
-                                <span className="lobby-time">
-                                    <span className="lobby-label">Last update:</span>
+                                <span className="lobby-time is-end">
                                     {formatRelative(entry.last_activity)}
                                 </span>
                             </span>
