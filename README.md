@@ -131,7 +131,7 @@ docker run -p 8080:80 --env-file backend/.env clippy
 
 ### Known Bugs 🐛
 
-- Destroying the session might not directly take you back to homepage.
+- None right now.
 
 ---
 

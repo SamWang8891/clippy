@@ -131,7 +131,7 @@ docker run -p 8080:80 --env-file backend/.env clippy
 
 ### 已知的bug 🐛
 
-- 銷毀連線階段後，可能無法直接導回首頁。
+- 目前沒有。
 
 ---
 
