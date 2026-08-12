@@ -30,7 +30,12 @@
     list-style: none;
 }
 
+/* Rooms are published and expire while the page sits open, so a row arriving
+   should read as an arrival. Removals still snap: the list is replaced wholesale
+   on every push, and holding a row on screen to animate it out would mean
+   tracking a list React has already thrown away. */
 .lobby-row {
+    animation: rise-in 260ms var(--ease) backwards;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;

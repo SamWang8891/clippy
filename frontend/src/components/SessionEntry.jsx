@@ -178,7 +178,7 @@ export function SessionEntry() {
                 <p className="entry-sub">Secure collaborative clipboard.</p>
             </header>
 
-            <div className="entry-tabs" role="tablist">
+            <div className="entry-tabs" role="tablist" data-mode={mode}>
                 <button
                     role="tab"
                     aria-selected={mode === 'create'}
@@ -199,6 +199,8 @@ export function SessionEntry() {
                 </button>
             </div>
 
+            {/* Deliberately unkeyed: both tabs render the same three controls, so
+                React reuses them in place and only the highlight travels. */}
             {mode === 'create' ? (
                 <form onSubmit={handleCreate} className="entry-form">
                     <ConnectionIdField

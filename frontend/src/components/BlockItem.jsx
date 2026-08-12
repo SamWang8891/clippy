@@ -131,7 +131,7 @@ function formatTime(iso) {
         d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 
-export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onReplaceFile}) {
+export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateText, onReplaceFile}) {
     const [decryptedContent, setDecryptedContent] = useState('');
     const [isDecrypting, setIsDecrypting] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -356,7 +356,14 @@ export function BlockItem({block, sessionId, userId, onDelete, onUpdateText, onR
         : rendered ? `code · ${rendered.language}` : 'text';
 
     return (
-        <article className="block" ref={articleRef}>
+        // --i staggers the entrance down the list. The view-transition name is
+        // what lets a deletion animate: the browser keeps a snapshot of this
+        // block to fade out while the ones below slide up into its place.
+        <article
+            className="block"
+            ref={articleRef}
+            style={{'--i': index, viewTransitionName: `block-${block.id}`}}
+        >
             <header className="block-head">
                 <span className="block-title" title={title}>{title}</span>
                 <span className="block-meta">

@@ -13,6 +13,7 @@ import {
     uploadFileBlock,
 } from '../utils/api';
 import {clearSessionKey, setSessionKeyFromConnectionId} from '../utils/encryption';
+import {viewTransition} from '../utils/motion';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
 import {Id} from './Id';
@@ -136,7 +137,10 @@ export function ClipboardInterface() {
                 break;
 
             case 'block_deleted':
-                setBlocks((prev) => prev.filter((b) => b.id !== message.block_id));
+                // The only change here that removes something, so it is the only
+                // one worth a transition: the block fades out while the list
+                // closes the gap instead of everything below jumping up.
+                viewTransition(() => setBlocks((prev) => prev.filter((b) => b.id !== message.block_id)));
                 break;
 
             case 'block_updated':

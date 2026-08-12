@@ -97,6 +97,23 @@ h1, h2, h3, h4, h5, h6 {
     letter-spacing: -0.02em;
 }
 
+/* The one entrance used across the app: appear, and settle upward. `to` is left
+   off on purpose so it lands on whatever the element's own styles say. */
+@keyframes rise-in {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 1ms !important;
+        animation-delay: 0ms !important;
+        transition-duration: 1ms !important;
+    }
+}
+
 .app-layout {
     display: flex;
     flex-direction: column;

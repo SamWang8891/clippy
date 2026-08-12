@@ -40,7 +40,12 @@
     }
 }
 
+.entry {
+    animation: rise-in 320ms var(--ease) backwards;
+}
+
 .entry-tabs {
+    position: relative;
     display: flex;
     gap: 0;
     border: 1px solid var(--border);
@@ -49,7 +54,27 @@
     background: var(--bg-elev);
 }
 
+/* The highlight is one element that slides, not a background that blinks from
+   tab to tab. It sits under the labels, so both stay readable mid-slide. */
+.entry-tabs::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    width: calc(50% - 2px);
+    background: var(--bg);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    transition: transform 260ms var(--ease);
+}
+
+.entry-tabs[data-mode="join"]::before {
+    transform: translateX(100%);
+}
+
 .entry-tab {
+    position: relative;
     flex: 1;
     padding: 10px 14px;
     font-size: 14px;
@@ -57,7 +82,7 @@
     color: var(--fg-muted);
     background: transparent;
     border-radius: var(--radius-sm);
-    transition: color 120ms var(--ease), background 120ms var(--ease);
+    transition: color 160ms var(--ease);
 }
 
 .entry-tab:hover:not(.is-active) {
@@ -66,8 +91,6 @@
 
 .entry-tab.is-active {
     color: var(--fg);
-    background: var(--bg);
-    box-shadow: var(--shadow);
 }
 
 .entry-form {

@@ -1,3 +1,7 @@
+/* Runs on mount, so it covers both a block arriving over the socket and the
+   whole list on load. The stagger is capped: a long list should read as one
+   sweep, not a slideshow. `backwards` keeps the block hidden during its delay
+   instead of flashing in at full opacity first. */
 .block {
     display: flex;
     flex-direction: column;
@@ -7,6 +11,8 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     transition: border-color 120ms var(--ease);
+    animation: rise-in 260ms var(--ease) backwards;
+    animation-delay: min(calc(var(--i, 0) * 35ms), 245ms);
 }
 
 .block:hover {
