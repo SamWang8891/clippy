@@ -152,9 +152,9 @@ export function Menu({session, users, currentUser, onClose}) {
                     </section>
                 )}
 
-                {/* A read-only room turns curl away, the host's included: a curl
-                    upload carries nobody's token. */}
-                {session?.allow_curl_upload && session.visibility !== 'public_read' && (
+                {/* A room kept to its host turns curl away, the host's own
+                    included: a curl upload carries nobody's token. */}
+                {session?.allow_curl_upload && session.allow_edit && (
                     <section className="menu-section">
                         <button
                             type="button"

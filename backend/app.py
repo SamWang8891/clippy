@@ -221,12 +221,6 @@ class User(BaseModel):
 
 BlockType = Literal["text", "file"]
 
-# private:     unlisted; joining takes the ID.
-# public_read: listed in the lobby; only the host may change the content.
-# public_edit: listed, and every member may change it.
-Visibility = Literal["private", "public_read", "public_edit"]
-VISIBILITIES = ("private", "public_read", "public_edit")
-
 
 class Block(BaseModel):
     id: str
@@ -245,7 +239,8 @@ class SessionInfo(BaseModel):
     blocks: list[Block]
     allow_join: bool
     allow_curl_upload: bool
-    visibility: Visibility
+    is_public: bool
+    allow_edit: bool
     host_id: str
     order_version: int
 
@@ -325,10 +320,16 @@ class ToggleCurlRequest(BaseModel):
     allow_curl_upload: bool
 
 
-class SetVisibilityRequest(BaseModel):
+class TogglePublicRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
-    visibility: Visibility
+    is_public: bool
+
+
+class ToggleEditRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    allow_edit: bool
 
 
 class RawLink(BaseModel):
@@ -395,7 +396,11 @@ class Session:
         # Private until the host says otherwise: publishing a session publishes
         # its connection id, which is also the KDF input, so anyone reading the
         # lobby can read the content. That has to be a deliberate act.
-        self.visibility: Visibility = "private"
+        self.is_public = False
+        # Whether members besides the host may change the content. Off until
+        # the host hands it out: sharing the ID shares the reading. Separate
+        # from is_public — a listed room can be open, a private one read-only.
+        self.allow_edit = False
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.websockets: dict[str, set[WebSocket]] = {}
@@ -412,15 +417,9 @@ class Session:
         uid = self.tokens.get(token)
         return uid is not None and self.users[uid].is_host
 
-    @property
-    def is_public(self) -> bool:
-        """Listed in the lobby, whether or not visitors may edit."""
-        return self.visibility != "private"
-
     def can_edit(self, user_id: str) -> bool:
-        """Whether a member may change the content. A read-only room still
-        lets its host write — publishing to read is not locking yourself out."""
-        return self.visibility != "public_read" or self.users[user_id].is_host
+        """Whether a member may change the content. The host always may."""
+        return self.allow_edit or self.users[user_id].is_host
 
     def committed_bytes(self) -> int:
         return self.total_bytes + self.reserved_bytes
@@ -515,7 +514,7 @@ class Session:
         """
         for user in self.users.values():
             user.is_host = (user.id == new_host_id)
-        self.visibility = "private"
+        self.is_public = False
         self.update_activity()
 
     def add_block(self, block: Block, byte_size: int = 0):
@@ -582,7 +581,8 @@ class Session:
             "block_bytes": self.block_bytes,
             "allow_join": self.allow_join,
             "allow_curl_upload": self.allow_curl_upload,
-            "visibility": self.visibility,
+            "is_public": self.is_public,
+            "allow_edit": self.allow_edit,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
         }
@@ -606,10 +606,10 @@ class Session:
         instance.reserved_bytes = 0
         instance.allow_join = data.get("allow_join", True)
         instance.allow_curl_upload = data.get("allow_curl_upload", False)
-        # Snapshots from before visibility had three states stored is_public;
-        # those rooms let every member edit, so that is what they come back as.
-        visibility = data.get("visibility") or ("public_edit" if data.get("is_public") else "private")
-        instance.visibility = visibility if visibility in VISIBILITIES else "private"
+        instance.is_public = data.get("is_public", False)
+        # Rooms saved before editing could be kept to the host let every member
+        # edit, so that is what they come back as.
+        instance.allow_edit = data.get("allow_edit", True)
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
         # Snapshots written before created_at existed fall back to the last
         # activity rather than "now", which would reshuffle the lobby on restart.
@@ -1342,7 +1342,8 @@ async def get_session(connection_id: str, request: Request):
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
         allow_curl_upload=session.allow_curl_upload,
-        visibility=session.visibility,
+        is_public=session.is_public,
+        allow_edit=session.allow_edit,
         host_id=next((u.id for u in session.users.values() if u.is_host), ""),
         order_version=session.order_version,
     )
@@ -1470,7 +1471,7 @@ async def transfer_host(request: TransferHostRequest):
     })
 
     if was_public:
-        await session.broadcast({"type": "visibility_changed", "visibility": "private"})
+        await session.broadcast({"type": "public_changed", "is_public": False})
         await broadcast_public_sessions()
 
     return api_response(
@@ -1552,17 +1553,17 @@ async def toggle_curl(request: ToggleCurlRequest):
 
 
 @router.post(
-    "/session/visibility",
-    summary="Set Visibility",
-    description="Keep the session private, or list it read-only or editable (host only)"
+    "/session/toggle_public",
+    summary="Toggle Public Listing",
+    description="Publish or unpublish the session on the entry page (host only)"
 )
-async def set_visibility(request: SetVisibilityRequest):
+async def toggle_public(request: TogglePublicRequest):
     """
-    Choose who can find the session and who can change it.
+    Publish the session in the public lobby, or take it back down.
 
-    Host only, and private by default: the lobby hands out the connection id,
-    and the connection id is what derives the content key. In ``public_read``
-    only the host may change the content; everyone else can read and copy.
+    Host only, and off by default: the lobby hands out the connection id, and
+    the connection id is what derives the content key. Who may edit is a
+    separate switch; see toggle_edit.
     """
     connection_id = request.connection_id.lower()
 
@@ -1574,26 +1575,50 @@ async def set_visibility(request: SetVisibilityRequest):
     if not session.is_host_token(request.user_id):
         return api_response(HTTPStatus.FORBIDDEN, "Only host can change visibility")
 
-    if session.visibility == request.visibility:
+    if session.is_public == request.is_public:
         # Nothing changed, so nothing to fan out. Without this, repeating the
         # call is a free lobby-broadcast amplifier: the frames queue up in
         # memory against any listener that has stopped reading.
         return api_response(HTTPStatus.OK, "Visibility unchanged", {"success": True})
 
-    was_public = session.is_public
-    session.visibility = request.visibility
+    session.is_public = request.is_public
     session.update_activity()
 
     await session.broadcast({
-        "type": "visibility_changed",
-        "visibility": session.visibility,
+        "type": "public_changed",
+        "is_public": session.is_public,
     })
-    # Appearing and disappearing is the one thing the lobby must show at once;
-    # read-only versus editable is not part of a lobby entry.
-    if session.is_public != was_public:
-        await broadcast_public_sessions()
+    # Appearing and disappearing is the one thing the lobby must show at once.
+    await broadcast_public_sessions()
 
     return api_response(HTTPStatus.OK, "Visibility updated", {"success": True})
+
+
+@router.post(
+    "/session/toggle_edit",
+    summary="Toggle Member Editing",
+    description="Let every member change the content, or keep it to the host (host only)"
+)
+async def toggle_edit(request: ToggleEditRequest):
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    if not session.is_host_token(request.user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "Only host can change who may edit")
+
+    session.allow_edit = request.allow_edit
+    session.update_activity()
+
+    await session.broadcast({
+        "type": "edit_permission_changed",
+        "allow_edit": request.allow_edit,
+    })
+
+    return api_response(HTTPStatus.OK, "Edit permission updated", {"success": True})
 
 
 @router.get(
@@ -2305,13 +2330,13 @@ async def serve_raw_link(connection_id: str, code: str):
 def curl_refusal(session: "Session") -> JSONResponse | None:
     """Why ``session`` takes no curl upload right now, or None when it does.
 
-    A curl upload carries no member token, so a read-only room refuses it even
-    though its host may write there. Asked again once the body is in: a
+    A curl upload carries no member token, so it cannot be the host writing:
+    a room kept to its host refuses it. Asked again once the body is in: a
     64 MiB upload can outlast the host switching either setting off.
     """
     if not session.allow_curl_upload:
         return JSONResponse(status_code=403, content={"ok": False, "error": "Curl upload is not enabled"})
-    if session.visibility == "public_read":
+    if not session.allow_edit:
         return JSONResponse(status_code=403, content={"ok": False, "error": "This connection is read-only"})
     return None
 
@@ -2450,7 +2475,7 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
 
     If the host leaves and other users remain, host privileges are auto-transferred
     so the session keeps a host and the remaining users can still manage it —
-    except in a read-only room, which keeps its host's seat until they return.
+    except in a room only its host may edit, which keeps the seat for them.
     """
     try:
         await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
@@ -2463,11 +2488,11 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
     user = session.users.get(user_id)
     if user is None or session.websockets.get(user_id):
         return
-    # Whoever joined first from the lobby is a reader, and the seat would hand
-    # them the whole room; unpublishing on the way would make every reader a
-    # writer. So the room stays as its host left it, and their token still
-    # opens it when they come back.
-    if user.is_host and session.visibility == "public_read":
+    # Everyone else in a room kept to its host is a reader — in a listed one,
+    # whoever wandered in from the lobby — and the seat would hand the first of
+    # them the whole room. So it stays as its host left it, and their token
+    # still opens it when they come back.
+    if user.is_host and not session.allow_edit:
         return
 
     was_host = user.is_host
@@ -2487,10 +2512,10 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
         else:
             # Nobody is left to hold the seat, so nobody could ever unpublish or
             # destroy it again. An unlisted room just waits out SESSION_TIMEOUT.
-            session.visibility = "private"
+            session.is_public = False
 
         if was_public:
-            await session.broadcast({"type": "visibility_changed", "visibility": "private"})
+            await session.broadcast({"type": "public_changed", "is_public": False})
             await broadcast_public_sessions()
 
 

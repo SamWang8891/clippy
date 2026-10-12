@@ -304,41 +304,34 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     assert _public(client) == []
 
     # A guest must not be able to publish someone else's session.
-    r = client.post("/api/v2/session/visibility", json={
-        "connection_id": cid, "user_id": guest["user_id"], "visibility": "public_read",
-    })
-    assert r.status_code == 403
+    _publish(client, guest, expect=403)
     assert _public(client) == []
 
-    r = client.post("/api/v2/session/visibility", json={
-        "connection_id": cid, "user_id": host["user_id"], "visibility": "public_read",
-    })
-    assert r.status_code == 200
-
+    _publish(client, host)
     listed = _public(client)
     assert [e["connection_id"] for e in listed] == [cid]
     assert listed[0]["name"] == "Alice"
     assert listed[0]["created_at"] and listed[0]["last_activity"]
-    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["visibility"] == "public_read"
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
 
     # A guest cannot take it down either.
-    r = client.post("/api/v2/session/visibility", json={
-        "connection_id": cid, "user_id": guest["user_id"], "visibility": "private",
-    })
-    assert r.status_code == 403
-
-    r = client.post("/api/v2/session/visibility", json={
-        "connection_id": cid, "user_id": host["user_id"], "visibility": "private",
-    })
-    assert r.status_code == 200
+    _publish(client, guest, False, expect=403)
+    _publish(client, host, False)
     assert _public(client) == []
 
 
-def _publish(client, member, expect=200):
-    r = client.post("/api/v2/session/visibility", json={
-        "connection_id": member["connection_id"],
-        "user_id": member["user_id"],
-        "visibility": "public_read",
+def _publish(client, member, is_public=True, expect=200):
+    """The padlock: list the room in the lobby, or take it down."""
+    r = client.post("/api/v2/session/toggle_public", json={
+        "connection_id": member["connection_id"], "user_id": member["user_id"], "is_public": is_public,
+    })
+    assert r.status_code == expect, r.text
+
+
+def _allow_edit(client, member, allow_edit=True, expect=200):
+    """The pencil: let every member edit, or keep it to the host."""
+    r = client.post("/api/v2/session/toggle_edit", json={
+        "connection_id": member["connection_id"], "user_id": member["user_id"], "allow_edit": allow_edit,
     })
     assert r.status_code == expect, r.text
 
@@ -354,7 +347,8 @@ def test_publishing_is_revoked_when_the_host_seat_moves(client, monkeypatch):
     host = _create_session(client)
     cid = host["connection_id"]
     guest = _join(client, cid, name="Mallory")
-    _set_visibility(client, host, "public_edit")
+    _allow_edit(client, host)
+    _publish(client, host)
     assert [e["connection_id"] for e in _public(client)] == [cid]
 
     # Exactly what a dropped socket triggers, without waiting out the grace period.
@@ -376,7 +370,8 @@ def test_publishing_is_revoked_when_the_last_member_leaves(client, monkeypatch):
 
     host = _create_session(client)
     cid = host["connection_id"]
-    _set_visibility(client, host, "public_edit")
+    _allow_edit(client, host)
+    _publish(client, host)
 
     monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
     asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
@@ -387,34 +382,34 @@ def test_publishing_is_revoked_when_the_last_member_leaves(client, monkeypatch):
 
 
 def test_a_read_only_room_keeps_its_seat_for_an_absent_host(client, monkeypatch):
-    """Handing the seat on gave the first reader from the lobby the whole room,
-    and unpublishing it on the way made every reader a writer."""
+    """Handing the seat on gave the first reader — in a listed room, whoever
+    came in from the lobby — the whole room."""
     import asyncio
 
     import app as app_module
 
-    host = _create_session(client)
-    cid = host["connection_id"]
-    reader = _join(client, cid, name="Mallory")
-    _publish(client, host)
-
     monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
-    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+    for listed in (True, False):
+        host = _create_session(client)
+        cid = host["connection_id"]
+        reader = _join(client, cid, name="Mallory")
+        _publish(client, host, listed)
 
-    session = app_module.sessions[cid]
-    assert session.users[host["public_id"]].is_host is True
-    assert session.users[reader["public_id"]].is_host is False
-    assert session.visibility == "public_read"
-    assert [e["connection_id"] for e in _public(client)] == [cid]
-    # The host's own token still opens it, and the reader still only reads.
-    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).status_code == 200
-    assert set(_writes(client, reader, "-", "-").values()) == {403}
+        asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
 
-    # Alone in the room makes no difference.
-    asyncio.run(app_module._remove_user_after_grace(cid, reader["public_id"]))
-    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
-    assert list(session.users) == [host["public_id"]]
-    assert session.visibility == "public_read"
+        session = app_module.sessions[cid]
+        assert session.users[host["public_id"]].is_host is True
+        assert session.users[reader["public_id"]].is_host is False
+        assert (session.is_public, session.allow_edit) == (listed, False)
+        # The host's own token still opens it, and the reader still only reads.
+        assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).status_code == 200
+        assert set(_writes(client, reader, "-", "-").values()) == {403}
+
+        # Alone in the room makes no difference.
+        asyncio.run(app_module._remove_user_after_grace(cid, reader["public_id"]))
+        asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+        assert list(session.users) == [host["public_id"]]
+        assert session.is_public is listed
 
 
 def test_explicit_host_transfer_also_unpublishes(client):
@@ -442,15 +437,11 @@ def test_lobby_socket_pushes_appearances_and_disappearances(client):
     with client.websocket_connect("/ws/lobby") as ws:
         assert ws.receive_json() == {"type": "public_sessions", "sessions": []}
 
-        client.post("/api/v2/session/visibility", json={
-            "connection_id": cid, "user_id": host["user_id"], "visibility": "public_read",
-        })
+        _publish(client, host)
         appeared = ws.receive_json()
         assert [e["connection_id"] for e in appeared["sessions"]] == [cid]
 
-        client.post("/api/v2/session/visibility", json={
-            "connection_id": cid, "user_id": host["user_id"], "visibility": "private",
-        })
+        _publish(client, host, False)
         assert ws.receive_json()["sessions"] == []
 
 
@@ -460,12 +451,7 @@ def test_public_listing_is_capped_and_newest_first(client):
     created = []
     for _ in range(app_module.MAX_PUBLIC_SESSIONS + 2):
         host = _create_session(client)
-        r = client.post("/api/v2/session/visibility", json={
-            "connection_id": host["connection_id"],
-            "user_id": host["user_id"],
-            "visibility": "public_read",
-        })
-        assert r.status_code == 200
+        _publish(client, host)
         created.append(host["connection_id"])
 
     listed = [e["connection_id"] for e in _public(client)]
@@ -479,9 +465,7 @@ def test_public_listing_is_capped_and_newest_first(client):
 def test_destroying_a_public_session_removes_it_from_the_lobby(client):
     host = _create_session(client)
     cid = host["connection_id"]
-    client.post("/api/v2/session/visibility", json={
-        "connection_id": cid, "user_id": host["user_id"], "visibility": "public_read",
-    })
+    _publish(client, host)
     assert _public(client)
 
     r = client.post("/api/v2/session/destroy", json={
@@ -586,6 +570,7 @@ def test_curl_upload_rejects_oversized_body(client):
     assert client.post("/api/v2/session/toggle_curl", json={
         "connection_id": cid, "user_id": uid, "allow_curl_upload": True,
     }).status_code == 200
+    _allow_edit(client, host)
 
     import app as app_module
     oversized = b"x" * (app_module.MAX_CURL_UPLOAD_BYTES + 1)
@@ -601,23 +586,16 @@ def test_curl_uploads_stay_out_of_read_only_rooms(client):
         "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": True,
     }).status_code == 200
 
-    _set_visibility(client, host, "public_read")
-    for upload in ({"content": b"hello"}, {"files": {"f": ("a.txt", b"hello")}}):
-        r = client.post(f"/u/{cid}", **upload)
-        assert r.status_code == 403
-        assert r.json()["error"] == "This connection is read-only"
+    # Kept to the host, which a new room is, listed or not.
+    for listed in (False, True):
+        _publish(client, host, listed)
+        for upload in ({"content": b"hello"}, {"files": {"f": ("a.txt", b"hello")}}):
+            r = client.post(f"/u/{cid}", **upload)
+            assert r.status_code == 403
+            assert r.json()["error"] == "This connection is read-only"
 
-    _set_visibility(client, host, "public_edit")
+    _allow_edit(client, host)
     assert client.post(f"/u/{cid}", content=b"hello").status_code == 200
-
-
-def _set_visibility(client, member, visibility):
-    r = client.post("/api/v2/session/visibility", json={
-        "connection_id": member["connection_id"],
-        "user_id": member["user_id"],
-        "visibility": visibility,
-    })
-    assert r.status_code == 200, r.text
 
 
 def _writes(client, member, block_id, file_block_id):
@@ -641,7 +619,7 @@ def _writes(client, member, block_id, file_block_id):
     }
 
 
-def test_read_only_rooms_let_only_the_host_write(client, monkeypatch):
+def test_only_the_host_writes_until_editing_is_handed_out(client, monkeypatch):
     import app as app_module
 
     monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
@@ -654,23 +632,29 @@ def test_read_only_rooms_let_only_the_host_write(client, monkeypatch):
     file_block_id = client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": host["user_id"]},
                                 files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
 
-    _set_visibility(client, host, "public_read")
-    assert set(_writes(client, guest, block_id, file_block_id).values()) == {403}
+    # A new room, private or listed, is the host's to write in.
+    for listed in (False, True):
+        _publish(client, host, listed)
+        assert set(_writes(client, guest, block_id, file_block_id).values()) == {403}, listed
     r = client.request("DELETE", "/api/v2/block/delete", json={
         "connection_id": cid, "user_id": guest["user_id"], "block_id": block_id})
     assert r.status_code == 403
     # Reading, and renaming yourself, are not writes to the room.
     assert client.get(f"/api/v2/block/download/{cid}/{block_id}", headers=_auth(guest)).status_code == 200
     assert _rename(client, guest, "Watcher") == "Watcher"
-    # Publishing read-only does not lock the host out.
     assert set(_writes(client, host, block_id, file_block_id).values()) == {200}
 
-    for open_mode in ("public_edit", "private"):
-        _set_visibility(client, host, open_mode)
-        assert set(_writes(client, guest, block_id, file_block_id).values()) == {200}, open_mode
-
+    # Only the host hands editing out, and the room may be listed or not.
+    _allow_edit(client, guest, expect=403)
+    _allow_edit(client, host)
+    for listed in (True, False):
+        _publish(client, host, listed)
+        assert set(_writes(client, guest, block_id, file_block_id).values()) == {200}, listed
     info = client.get(f"/api/v2/session/{cid}", headers=_auth(guest)).json()["data"]
-    assert info["visibility"] == "private"
+    assert (info["is_public"], info["allow_edit"]) == (False, True)
+
+    _allow_edit(client, host, False)
+    assert set(_writes(client, guest, block_id, file_block_id).values()) == {403}
 
 
 def test_writes_that_lose_permission_mid_write_leave_nothing_behind(client, monkeypatch):
@@ -707,7 +691,7 @@ def test_writes_that_lose_permission_mid_write_leave_nothing_behind(client, monk
     real_open = aiofiles.open
 
     def open_then_lock(*args, **kwargs):
-        session.visibility = "public_read"
+        session.allow_edit = False
         return real_open(*args, **kwargs)
 
     monkeypatch.setattr(aiofiles, "open", open_then_lock)
@@ -729,12 +713,12 @@ def test_writes_that_lose_permission_mid_write_leave_nothing_behind(client, monk
         "curl_file": lambda: client.post(f"/u/{cid}", files={"f": ("late.txt", b"late")}),
     }
     for name, write in writes.items():
-        session.visibility = "private"
+        session.allow_edit = True
         assert write().status_code == 403, name
     assert state() == before
 
 
-def test_visibility_changes_reach_members_and_only_listing_reaches_the_lobby(client):
+def test_switches_reach_members_and_only_listing_reaches_the_lobby(client):
     host = _create_session(client)
     cid = host["connection_id"]
 
@@ -742,20 +726,20 @@ def test_visibility_changes_reach_members_and_only_listing_reaches_the_lobby(cli
             client.websocket_connect("/ws/lobby") as lobby:
         assert lobby.receive_json()["sessions"] == []
 
-        _set_visibility(client, host, "public_read")
-        assert ws.receive_json() == {"type": "visibility_changed", "visibility": "public_read"}
+        _publish(client, host)
+        assert ws.receive_json() == {"type": "public_changed", "is_public": True}
         assert [e["connection_id"] for e in lobby.receive_json()["sessions"]] == [cid]
 
-        # Read-only to editable keeps the room listed, so the lobby hears
-        # nothing; the next lobby frame is the room going away.
-        _set_visibility(client, host, "public_edit")
-        assert ws.receive_json() == {"type": "visibility_changed", "visibility": "public_edit"}
-        _set_visibility(client, host, "private")
-        assert ws.receive_json() == {"type": "visibility_changed", "visibility": "private"}
+        # Who may edit is not part of a lobby entry, so the lobby hears
+        # nothing; its next frame is the room going away.
+        _allow_edit(client, host)
+        assert ws.receive_json() == {"type": "edit_permission_changed", "allow_edit": True}
+        _publish(client, host, False)
+        assert ws.receive_json() == {"type": "public_changed", "is_public": False}
         assert lobby.receive_json()["sessions"] == []
 
 
-def test_snapshots_from_two_state_visibility_load_as_they_behaved():
+def test_snapshots_from_before_the_edit_switch_load_as_they_behaved():
     import app as app_module
 
     def restored(**extra):
@@ -765,14 +749,18 @@ def test_snapshots_from_two_state_visibility_load_as_they_behaved():
             "last_activity": "2026-08-12T10:00:00",
             **extra,
         }
-        return app_module.Session.from_dict(snapshot).visibility
+        session = app_module.Session.from_dict(snapshot)
+        return session.is_public, session.allow_edit
 
-    # A listed room used to let every member edit.
-    assert restored(is_public=True) == "public_edit"
-    assert restored(is_public=False) == "private"
-    assert restored() == "private"
-    assert restored(visibility="public_read") == "public_read"
-    assert restored(visibility="nonsense") == "private"
+    # Every member could edit then, listed or not.
+    assert restored(is_public=True) == (True, True)
+    assert restored(is_public=False) == (False, True)
+    assert restored() == (False, True)
+    # Saved since, both switches come back as they were.
+    fresh = app_module.Session("fresh1", "tok", "uid", "Host")
+    assert (fresh.is_public, fresh.allow_edit) == (False, False)
+    back = app_module.Session.from_dict(json_roundtrip(fresh.to_dict()))
+    assert (back.is_public, back.allow_edit) == (False, False)
 
 
 def test_blocks_move_after_an_anchor_and_the_order_sticks(client):
@@ -793,6 +781,7 @@ def test_blocks_move_after_an_anchor_and_the_order_sticks(client):
         blocks = client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["blocks"]
         return [blk["id"] for blk in blocks]
 
+    _allow_edit(client, host)
     with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
         assert move(host, c, None).json()["data"] == {"order": [c, a, b], "version": 1}
         assert ws.receive_json() == {"type": "blocks_reordered", "order": [c, a, b], "version": 1}
@@ -806,8 +795,8 @@ def test_blocks_move_after_an_anchor_and_the_order_sticks(client):
     assert move(host, a, "missing").status_code == 404
     assert move(host, "missing", None).status_code == 404
 
-    # Reordering is a write: a read-only room keeps it to the host.
-    _set_visibility(client, host, "public_read")
+    # Reordering is a write: a room kept to its host keeps it to the host.
+    _allow_edit(client, host, False)
     assert move(guest, a, c).status_code == 403
     assert move(host, a, c).status_code == 200
     assert order() == [b, c, a]

@@ -157,15 +157,27 @@ export async function toggleCurl(sessionId, userId, allowCurlUpload) {
     return handleApiResponse(response);
 }
 
-/** visibility: 'private' | 'public_read' | 'public_edit' */
-export async function setSessionVisibility(sessionId, userId, visibility) {
-    const response = await fetch(`${await getApiBase()}/session/visibility`, {
+export async function toggleSessionPublic(sessionId, userId, isPublic) {
+    const response = await fetch(`${await getApiBase()}/session/toggle_public`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
             connection_id: sessionId,
             user_id: userId,
-            visibility,
+            is_public: isPublic,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
+export async function toggleSessionEdit(sessionId, userId, allowEdit) {
+    const response = await fetch(`${await getApiBase()}/session/toggle_edit`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            allow_edit: allowEdit,
         }),
     });
     return handleApiResponse(response);

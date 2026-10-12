@@ -5,6 +5,7 @@ import {useToast} from '../context/ToastContext';
 import {IconButton} from './IconButton';
 import {Copy} from './animate-ui/icons/copy';
 import {Lock} from './animate-ui/icons/lock';
+import {Pencil} from './animate-ui/icons/pencil';
 import {X} from './animate-ui/icons/x';
 import './Id.css';
 
@@ -25,13 +26,17 @@ const IconQr = ({size, ...props}) => (
     </svg>
 );
 
-const VISIBILITY_TITLES = {
-    private: ['Private', 'Private — click to list on the home page, read-only'],
-    public_read: ['Listed on the home page, read-only', 'Listed on the home page, read-only — click to let everyone edit'],
-    public_edit: ['Listed on the home page, editable', 'Listed on the home page, editable — click to make private'],
+// [what everyone is told, what the host is told]
+const LOCK_TITLES = {
+    false: ['Private', 'Private — click to list on the home page'],
+    true: ['Listed on the home page', 'Listed on the home page — click to hide'],
+};
+const EDIT_TITLES = {
+    false: ['Only the host can edit', 'Only the host can edit — click to let everyone edit'],
+    true: ['Everyone can edit', 'Everyone can edit — click to keep it to the host'],
 };
 
-export function Id({sessionData, visibility = 'private', canChangeVisibility = false, onChangeVisibility}) {
+export function Id({sessionData, isPublic = false, allowEdit = false, canChange = false, onTogglePublic, onToggleEdit}) {
     const [showQrPopup, setShowQrPopup] = useState(false);
     const [qrDataUrl, setQrDataUrl] = useState('');
     const [qrError, setQrError] = useState(false);
@@ -104,19 +109,33 @@ export function Id({sessionData, visibility = 'private', canChangeVisibility = f
                 aria-label="Show QR code"
                 title="Show QR code"
             />
-            {/* Three steps, louder each time: private, listed read-only (an
-                outline), listed editable (filled). The shackle springs open as
-                the room is listed and shuts again when it goes private. */}
+            {/* Two switches, the host's to flip and everyone's to read: who can
+                find the room, and who can change it. Each turns green as it
+                opens up, its icon opening with it — the shackle springs up, the
+                pencil's strike-through draws back. */}
             <motion.button
                 type="button"
-                className={`id-btn id-lock is-${visibility}`}
-                onClick={onChangeVisibility}
-                disabled={!canChangeVisibility}
-                whileTap={canChangeVisibility ? {scale: 0.9} : undefined}
-                aria-label={VISIBILITY_TITLES[visibility][canChangeVisibility ? 1 : 0]}
-                title={VISIBILITY_TITLES[visibility][canChangeVisibility ? 1 : 0]}
+                className={`id-btn id-switch ${isPublic ? 'is-open' : ''}`}
+                onClick={onTogglePublic}
+                disabled={!canChange}
+                whileTap={canChange ? {scale: 0.9} : undefined}
+                aria-pressed={isPublic}
+                aria-label={LOCK_TITLES[isPublic][canChange ? 1 : 0]}
+                title={LOCK_TITLES[isPublic][canChange ? 1 : 0]}
             >
-                <Lock size={14} animate={visibility === 'private' ? false : 'unlock'} aria-hidden="true" />
+                <Lock size={14} animate={isPublic ? 'unlock' : false} aria-hidden="true" />
+            </motion.button>
+            <motion.button
+                type="button"
+                className={`id-btn id-switch ${allowEdit ? 'is-open' : ''}`}
+                onClick={onToggleEdit}
+                disabled={!canChange}
+                whileTap={canChange ? {scale: 0.9} : undefined}
+                aria-pressed={allowEdit}
+                aria-label={EDIT_TITLES[allowEdit][canChange ? 1 : 0]}
+                title={EDIT_TITLES[allowEdit][canChange ? 1 : 0]}
+            >
+                <Pencil size={14} animate={allowEdit ? 'unlock' : false} aria-hidden="true" />
             </motion.button>
 
             {showQrPopup && (

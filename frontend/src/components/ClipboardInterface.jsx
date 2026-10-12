@@ -11,7 +11,8 @@ import {
     moveBlock,
     renameSelf,
     replaceFileBlock,
-    setSessionVisibility,
+    toggleSessionEdit,
+    toggleSessionPublic,
     updateTextBlock,
     uploadFileBlock,
 } from '../utils/api';
@@ -59,12 +60,6 @@ const COMPOSE_TABS = [
 // The same snap as the block list: quick, and settled rather than springy.
 const QUICK = {duration: 0.18, ease: [0.2, 0, 0, 1]};
 
-const NEXT_VISIBILITY = {private: 'public_read', public_read: 'public_edit', public_edit: 'private'};
-const VISIBILITY_TOASTS = {
-    private: 'Private again',
-    public_read: 'Listed on the home page, read-only',
-    public_edit: 'Listed on the home page, editable',
-};
 
 
 export function ClipboardInterface() {
@@ -116,7 +111,7 @@ export function ClipboardInterface() {
     const currentUser = users.find((u) => u.id === myPublicId);
     // Off until the session has loaded, so a read-only room never flashes its
     // composer at a visitor. The server refuses the writes either way.
-    const canEdit = Boolean(session) && (session.visibility !== 'public_read' || Boolean(currentUser?.is_host));
+    const canEdit = Boolean(session) && (session.allow_edit || Boolean(currentUser?.is_host));
 
     useEffect(() => {
         if (!sessionData?.connection_id) return;
@@ -254,8 +249,12 @@ export function ClipboardInterface() {
                 setSession((prev) => ({...prev, allow_curl_upload: message.allow_curl_upload}));
                 break;
 
-            case 'visibility_changed':
-                setSession((prev) => ({...prev, visibility: message.visibility}));
+            case 'public_changed':
+                setSession((prev) => ({...prev, is_public: message.is_public}));
+                break;
+
+            case 'edit_permission_changed':
+                setSession((prev) => ({...prev, allow_edit: message.allow_edit}));
                 break;
 
             case 'session_destroyed':
@@ -605,14 +604,23 @@ export function ClipboardInterface() {
         }
     };
 
-    // Each press opens the room one step further, then closes it again.
-    const handleCycleVisibility = async () => {
-        const next = NEXT_VISIBILITY[session?.visibility ?? 'private'];
+    const handleTogglePublic = async () => {
+        const next = !session?.is_public;
         try {
-            await setSessionVisibility(sessionData.connection_id, sessionData.user_id, next);
-            toast.success(VISIBILITY_TOASTS[next]);
+            await toggleSessionPublic(sessionData.connection_id, sessionData.user_id, next);
+            toast.success(next ? 'Listed on the home page' : 'Private again');
         } catch (err) {
             toast.error('Failed to change visibility: ' + err.message);
+        }
+    };
+
+    const handleToggleEdit = async () => {
+        const next = !session?.allow_edit;
+        try {
+            await toggleSessionEdit(sessionData.connection_id, sessionData.user_id, next);
+            toast.success(next ? 'Everyone can edit' : 'Only the host can edit');
+        } catch (err) {
+            toast.error('Failed to change who can edit: ' + err.message);
         }
     };
 
@@ -677,9 +685,11 @@ export function ClipboardInterface() {
                     <div className="desk-id">
                         <Id
                             sessionData={sessionData}
-                            visibility={session?.visibility ?? 'private'}
-                            canChangeVisibility={currentUser?.is_host ?? false}
-                            onChangeVisibility={handleCycleVisibility}
+                            isPublic={session?.is_public ?? false}
+                            allowEdit={session?.allow_edit ?? false}
+                            canChange={currentUser?.is_host ?? false}
+                            onTogglePublic={handleTogglePublic}
+                            onToggleEdit={handleToggleEdit}
                         />
                     </div>
                 </div>

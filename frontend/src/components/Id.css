@@ -40,24 +40,16 @@
     cursor: default;
 }
 
-/* Public is the loud state: an unlocked room is worth noticing at a glance,
-   and one anyone can edit louder still. Listed alongside the hover rule so
-   state, not the cursor, decides the colour — the plain .id-btn:hover selector
-   is the more specific of the two. */
-.id-lock {
+/* Open is the loud state: a listed room, or one anyone can edit, is worth
+   noticing at a glance. Listed alongside the hover rule so state, not the
+   cursor, decides the colour — the plain .id-btn:hover selector is the more
+   specific of the two. */
+.id-switch {
     transition: color 160ms var(--ease), border-color 160ms var(--ease), background 160ms var(--ease);
 }
-
-.id-lock.is-public_read,
-.id-lock.is-public_read:hover:not(:disabled) {
+.id-switch.is-open,
+.id-switch.is-open:hover:not(:disabled) {
     color: var(--accent-live);
-    border-color: var(--accent-live);
-}
-
-.id-lock.is-public_edit,
-.id-lock.is-public_edit:hover:not(:disabled) {
-    color: var(--bg-elev);
-    background: var(--accent-live);
     border-color: var(--accent-live);
 }
 
