@@ -311,7 +311,7 @@ def test_publishing_is_revoked_when_the_host_seat_moves(client, monkeypatch):
     host = _create_session(client)
     cid = host["connection_id"]
     guest = _join(client, cid, name="Mallory")
-    _publish(client, host)
+    _set_visibility(client, host, "public_edit")
     assert [e["connection_id"] for e in _public(client)] == [cid]
 
     # Exactly what a dropped socket triggers, without waiting out the grace period.
@@ -333,7 +333,7 @@ def test_publishing_is_revoked_when_the_last_member_leaves(client, monkeypatch):
 
     host = _create_session(client)
     cid = host["connection_id"]
-    _publish(client, host)
+    _set_visibility(client, host, "public_edit")
 
     monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
     asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
@@ -341,6 +341,37 @@ def test_publishing_is_revoked_when_the_last_member_leaves(client, monkeypatch):
     assert app_module.sessions[cid].users == {}
     assert app_module.sessions[cid].is_public is False
     assert _public(client) == []
+
+
+def test_a_read_only_room_keeps_its_seat_for_an_absent_host(client, monkeypatch):
+    """Handing the seat on gave the first reader from the lobby the whole room,
+    and unpublishing it on the way made every reader a writer."""
+    import asyncio
+
+    import app as app_module
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    reader = _join(client, cid, name="Mallory")
+    _publish(client, host)
+
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
+    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+
+    session = app_module.sessions[cid]
+    assert session.users[host["public_id"]].is_host is True
+    assert session.users[reader["public_id"]].is_host is False
+    assert session.visibility == "public_read"
+    assert [e["connection_id"] for e in _public(client)] == [cid]
+    # The host's own token still opens it, and the reader still only reads.
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).status_code == 200
+    assert set(_writes(client, reader, "-", "-").values()) == {403}
+
+    # Alone in the room makes no difference.
+    asyncio.run(app_module._remove_user_after_grace(cid, reader["public_id"]))
+    asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+    assert list(session.users) == [host["public_id"]]
+    assert session.visibility == "public_read"
 
 
 def test_explicit_host_transfer_also_unpublishes(client):

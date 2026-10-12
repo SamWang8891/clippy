@@ -2372,7 +2372,8 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
     Wait for the grace period, then evict the user if they haven't reconnected.
 
     If the host leaves and other users remain, host privileges are auto-transferred
-    so the session keeps a host and the remaining users can still manage it.
+    so the session keeps a host and the remaining users can still manage it —
+    except in a read-only room, which keeps its host's seat until they return.
     """
     try:
         await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
@@ -2384,6 +2385,12 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
         return
     user = session.users.get(user_id)
     if user is None or session.websockets.get(user_id):
+        return
+    # Whoever joined first from the lobby is a reader, and the seat would hand
+    # them the whole room; unpublishing on the way would make every reader a
+    # writer. So the room stays as its host left it, and their token still
+    # opens it when they come back.
+    if user.is_host and session.visibility == "public_read":
         return
 
     was_host = user.is_host
