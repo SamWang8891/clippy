@@ -226,6 +226,7 @@
 }
 
 .compose {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -243,35 +244,18 @@
 }
 
 .compose-tab {
+    position: relative;
     flex: 1;
     padding: 12px 22px;
     font-size: 16px;
     font-weight: 500;
     color: var(--fg-muted);
-    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    transition: color 120ms var(--ease), background 120ms var(--ease), border-color 120ms var(--ease);
+    transition: color 160ms var(--ease);
 }
 
-.compose-tab:hover:not(.is-active) {
-    color: var(--fg);
-}
-
+.compose-tab:hover:not(.is-active),
 .compose-tab.is-active {
-    color: var(--fg);
-    border-color: var(--border-strong);
-    background: var(--bg);
-}
-
-.compose-close {
-    padding: 12px 18px;
-    font-size: 16px;
-    color: var(--fg-subtle);
-    border-radius: var(--radius-sm);
-    transition: color 120ms var(--ease);
-}
-
-.compose-close:hover {
     color: var(--fg);
 }
 
@@ -302,6 +286,47 @@
 
 .compose-dot {
     color: var(--border-strong);
+}
+
+.compose-lang {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* On a phone the picker wraps to a line of its own, where a leading dot
+   separates it from nothing. */
+@media (max-width: 639px) {
+    .compose-lang .compose-dot {
+        display: none;
+    }
+}
+
+.compose-actions {
+    display: flex;
+    gap: 10px;
+    margin-left: auto;
+}
+
+.compose-cancel {
+    padding: 14px 22px;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--fg-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.compose-cancel:hover:not(:disabled) {
+    color: var(--fg);
+    border-color: var(--fg);
+}
+
+.compose-cancel:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 .compose-submit {

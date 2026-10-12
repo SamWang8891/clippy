@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {Reorder, useDragControls} from 'motion/react';
+import {AnimatePresence, Reorder, motion, useDragControls} from 'motion/react';
 import hljs from 'highlight.js/lib/common';
 import powershell from 'highlight.js/lib/languages/powershell';
 hljs.registerLanguage('powershell', powershell);
@@ -426,29 +426,43 @@ export function BlockItem({
                                 {id: 'text', label: 'Text'},
                                 {id: 'code', label: 'Code'},
                             ].map((opt) => (
-                                <button
+                                <motion.button
                                     key={opt.id}
                                     type="button"
                                     className={`block-edit-tab ${editMode === opt.id ? 'is-active' : ''}`}
                                     // Keeps focus in the editor; see the effect above.
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => setEditMode(opt.id)}
+                                    whileTap={{scale: 0.97}}
                                 >
-                                    {opt.label}
-                                </button>
+                                    {editMode === opt.id && (
+                                        <motion.span layoutId={`edit-tab-${block.id}`} className="tab-pill" transition={SLIDE} />
+                                    )}
+                                    <span className="tab-label">{opt.label}</span>
+                                </motion.button>
                             ))}
-                            {editMode === 'code' && (
-                                <Select
-                                    className="block-edit-lang"
-                                    value={editLanguage}
-                                    options={SUPPORTED_LANGUAGES}
-                                    onChange={(next) => {
-                                        setEditLanguage(next);
-                                        editInputRef.current?.focus();
-                                    }}
-                                    label="Language"
-                                />
-                            )}
+                            <AnimatePresence initial={false}>
+                                {editMode === 'code' && (
+                                    <motion.div
+                                        key="language"
+                                        className="block-edit-lang"
+                                        initial={{opacity: 0, x: 6}}
+                                        animate={{opacity: 1, x: 0}}
+                                        exit={{opacity: 0, x: 6}}
+                                        transition={SLIDE}
+                                    >
+                                        <Select
+                                            value={editLanguage}
+                                            options={SUPPORTED_LANGUAGES}
+                                            onChange={(next) => {
+                                                setEditLanguage(next);
+                                                editInputRef.current?.focus();
+                                            }}
+                                            label="Language"
+                                        />
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
                         </div>
                         <LinedTextarea
                             inputRef={editInputRef}

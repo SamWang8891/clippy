@@ -217,21 +217,17 @@
 }
 
 .block-edit-tab {
+    position: relative;
     padding: 12px 22px;
     font-size: 16px;
     color: var(--fg-muted);
-    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    transition: color 120ms var(--ease), border-color 120ms var(--ease);
+    transition: color 160ms var(--ease);
 }
 
-.block-edit-tab:hover:not(.is-active) {
-    color: var(--fg);
-}
-
+.block-edit-tab:hover:not(.is-active),
 .block-edit-tab.is-active {
     color: var(--fg);
-    border-color: var(--border-strong);
 }
 
 .block-edit-lang {

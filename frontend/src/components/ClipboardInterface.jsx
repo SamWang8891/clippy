@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {AnimatePresence, Reorder} from 'motion/react';
+import {AnimatePresence, Reorder, motion} from 'motion/react';
 import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
@@ -44,6 +44,14 @@ function applyOrder(blocks, order) {
 // The block a block sits right after — what the server takes as its anchor.
 const anchorOf = (ids, id) => ids[ids.indexOf(id) - 1] ?? null;
 
+const COMPOSE_TABS = [
+    {id: 'text', label: 'Text'},
+    {id: 'code', label: 'Code'},
+    {id: 'file', label: 'File'},
+];
+// The same snap as the block list: quick, and settled rather than springy.
+const QUICK = {duration: 0.18, ease: [0.2, 0, 0, 1]};
+
 const NEXT_VISIBILITY = {private: 'public_read', public_read: 'public_edit', public_edit: 'private'};
 const VISIBILITY_TOASTS = {
     private: 'Private again',
@@ -65,6 +73,11 @@ export function ClipboardInterface() {
     const [showMenu, setShowMenu] = useState(false);
     const [notification, setNotification] = useState(null);
     const [isCreating, setIsCreating] = useState(false);
+    const composeRef = useRef(null);
+    // Whether the open composer holds anything worth asking about; the forms
+    // report it, and the outside-press handler below reads it.
+    const composeDirtyRef = useRef(false);
+    const askingRef = useRef(false);
     const [newBlockType, setNewBlockType] = useState('text');
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [pendingUploads, setPendingUploads] = useState(0);
@@ -253,10 +266,73 @@ export function ClipboardInterface() {
         setTimeout(() => setNotification(null), 3000);
     };
 
+    const closeComposer = () => {
+        composeDirtyRef.current = false;
+        setIsCreating(false);
+    };
+
+    const reportComposeDirty = useCallback((dirty) => {
+        composeDirtyRef.current = dirty;
+    }, []);
+
+    // A press anywhere outside the composer puts it away: at once when it is
+    // empty, after asking when it holds unsaved work. Scrollbars, toasts, drag
+    // grips and the question itself do not count as outside.
+    //
+    // mousedown rather than pointerdown: a phone fires it only for a tap, so
+    // scrolling the page does not count as a press. When the press asks, it is
+    // claimed whole — preventDefault keeps it from moving focus off the dialog
+    // it just opened, and the click it would become is swallowed, so the button
+    // under the pointer does not fire behind the question.
+    useEffect(() => {
+        if (!isCreating) return undefined;
+        let swallowClick = false;
+        const onMouseDown = async (e) => {
+            swallowClick = false;
+            if (e.button !== 0 || askingRef.current) return;
+            const target = e.target;
+            if (composeRef.current?.contains(target) || target === document.documentElement) return;
+            if (target.closest?.('.toast-container, .confirm-dialog, .confirm-overlay, .block-handle')) return;
+            if (!composeDirtyRef.current) {
+                closeComposer();
+                return;
+            }
+            e.preventDefault();
+            swallowClick = true;
+            askingRef.current = true;
+            const discard = await confirm({
+                title: 'Discard draft',
+                message: 'This item has not been saved. Discard it?',
+                confirmText: 'Discard',
+                cancelText: 'Keep editing',
+                confirmStyle: 'danger',
+            });
+            askingRef.current = false;
+            if (discard) {
+                closeComposer();
+            } else {
+                // After the dialog has handed focus back, not before.
+                requestAnimationFrame(() => composeRef.current?.querySelector('textarea, input[type="file"]')?.focus());
+            }
+        };
+        const onClick = (e) => {
+            if (!swallowClick) return;
+            swallowClick = false;
+            e.preventDefault();
+            e.stopPropagation();
+        };
+        document.addEventListener('mousedown', onMouseDown, true);
+        document.addEventListener('click', onClick, true);
+        return () => {
+            document.removeEventListener('mousedown', onMouseDown, true);
+            document.removeEventListener('click', onClick, true);
+        };
+    }, [isCreating, confirm]);
+
     const handleCreateTextBlock = async (content) => {
         try {
             await createTextBlock(sessionData.connection_id, sessionData.user_id, content);
-            setIsCreating(false);
+            closeComposer();
             toast.success('Saved');
         } catch (err) {
             toast.error('Failed to save: ' + err.message);
@@ -276,7 +352,7 @@ export function ClipboardInterface() {
     const handleUploadFile = async (file) => {
         try {
             await uploadFileBlock(sessionData.connection_id, sessionData.user_id, file);
-            setIsCreating(false);
+            closeComposer();
             toast.success('Uploaded');
         } catch (err) {
             toast.error('Failed to upload: ' + err.message);
@@ -568,14 +644,12 @@ export function ClipboardInterface() {
                 </Reorder.Group>
 
                 {!canEdit ? null : isCreating ? (
-                    <div className="compose">
-                        <div className="compose-tabs" role="tablist">
-                            {[
-                                {id: 'text', label: 'Text'},
-                                {id: 'code', label: 'Code'},
-                                {id: 'file', label: 'File'},
-                            ].map((t) => (
-                                <button
+                    // layout animates the card's height between forms; the
+                    // children ride along by position, so text never squashes.
+                    <motion.div className="compose" ref={composeRef} layout transition={QUICK} style={{borderRadius: 8}}>
+                        <motion.div className="compose-tabs" role="tablist" layout="position">
+                            {COMPOSE_TABS.map((t) => (
+                                <motion.button
                                     key={t.id}
                                     role="tab"
                                     aria-selected={newBlockType === t.id}
@@ -584,30 +658,47 @@ export function ClipboardInterface() {
                                     // straight after switching modes is not lost.
                                     onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => setNewBlockType(t.id)}
+                                    whileTap={{scale: 0.97}}
                                     type="button"
                                 >
-                                    {t.label}
-                                </button>
+                                    {/* One highlight that slides to the chosen tab. */}
+                                    {newBlockType === t.id && (
+                                        <motion.span layoutId="compose-tab-pill" className="tab-pill" transition={QUICK} />
+                                    )}
+                                    <span className="tab-label">{t.label}</span>
+                                </motion.button>
                             ))}
-                            <button
-                                className="compose-close"
-                                onClick={() => setIsCreating(false)}
-                                aria-label="Close composer"
-                                type="button"
-                            >
-                                Close
-                            </button>
-                        </div>
+                        </motion.div>
 
-                        {newBlockType === 'file'
-                            ? <FileUploadForm onSubmit={handleUploadFile} />
-                            : <TextBlockForm
-                                mode={newBlockType}
-                                onSubmit={(body, language) => handleCreateTextBlock(
-                                    newBlockType === 'code' ? encodeCodeBlock(body, language) : body
-                                )}
-                            />}
-                    </div>
+                        {/* Text and Code share one form, so switching between them
+                            keeps what was typed; File swaps the form out, the old
+                            one fading over the new while the card resizes. */}
+                        <AnimatePresence mode="popLayout" initial={false}>
+                            <motion.div
+                                key={newBlockType === 'file' ? 'file' : 'text'}
+                                layout="position"
+                                initial={{opacity: 0, y: 6}}
+                                animate={{opacity: 1, y: 0}}
+                                exit={{opacity: 0, y: -4}}
+                                transition={QUICK}
+                            >
+                                {newBlockType === 'file'
+                                    ? <FileUploadForm
+                                        onSubmit={handleUploadFile}
+                                        onCancel={closeComposer}
+                                        onDirtyChange={reportComposeDirty}
+                                    />
+                                    : <TextBlockForm
+                                        mode={newBlockType}
+                                        onSubmit={(body, language) => handleCreateTextBlock(
+                                            newBlockType === 'code' ? encodeCodeBlock(body, language) : body
+                                        )}
+                                        onCancel={closeComposer}
+                                        onDirtyChange={reportComposeDirty}
+                                    />}
+                            </motion.div>
+                        </AnimatePresence>
+                    </motion.div>
                 ) : (
                     <IconButton
                         icon={Plus}
@@ -697,10 +788,14 @@ function NameEditor({name, onRename}) {
     );
 }
 
-function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLanguage = 'auto'}) {
+function TextBlockForm({mode = 'text', onSubmit, onCancel, onDirtyChange, initialContent = '', initialLanguage = 'auto'}) {
     const [content, setContent] = useState(initialContent);
     const [language, setLanguage] = useState(initialLanguage);
     const inputRef = useRef(null);
+
+    useEffect(() => {
+        onDirtyChange?.(Boolean(content.trim()));
+    }, [content, onDirtyChange]);
 
     // Switching Text/Code or picking a language is a click on a button, which
     // takes focus with it — and the next keystrokes landed on that button.
@@ -748,24 +843,38 @@ function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLan
                     <span>{lineCount} line{lineCount === 1 ? '' : 's'}</span>
                     <span className="compose-dot">·</span>
                     <span>{charCount} chars</span>
-                    {isCode && (
-                        <>
-                            <span className="compose-dot">·</span>
-                            <Select
-                                value={language}
-                                options={SUPPORTED_LANGUAGES}
-                                onChange={(next) => {
-                                    setLanguage(next);
-                                    inputRef.current?.focus();
-                                }}
-                                label="Language"
-                            />
-                        </>
-                    )}
+                    <AnimatePresence initial={false}>
+                        {isCode && (
+                            <motion.span
+                                key="language"
+                                className="compose-lang"
+                                initial={{opacity: 0, x: -6}}
+                                animate={{opacity: 1, x: 0}}
+                                exit={{opacity: 0, x: -6}}
+                                transition={QUICK}
+                            >
+                                <span className="compose-dot">·</span>
+                                <Select
+                                    value={language}
+                                    options={SUPPORTED_LANGUAGES}
+                                    onChange={(next) => {
+                                        setLanguage(next);
+                                        inputRef.current?.focus();
+                                    }}
+                                    label="Language"
+                                />
+                            </motion.span>
+                        )}
+                    </AnimatePresence>
                 </div>
-                <button type="submit" className="compose-submit" disabled={!content.trim()}>
-                    Save
-                </button>
+                <div className="compose-actions">
+                    <button type="button" className="compose-cancel" onClick={onCancel}>
+                        Cancel
+                    </button>
+                    <button type="submit" className="compose-submit" disabled={!content.trim()}>
+                        Save
+                    </button>
+                </div>
             </div>
         </form>
     );
@@ -773,10 +882,14 @@ function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLan
 
 export {TextBlockForm};
 
-function FileUploadForm({onSubmit}) {
+function FileUploadForm({onSubmit, onCancel, onDirtyChange}) {
     const [file, setFile] = useState(null);
     const [dragging, setDragging] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
+
+    useEffect(() => {
+        onDirtyChange?.(Boolean(file));
+    }, [file, onDirtyChange]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -831,9 +944,14 @@ function FileUploadForm({onSubmit}) {
                 <div className="compose-stats">
                     {file ? <span>{file.type || 'application/octet-stream'}</span> : <span>&nbsp;</span>}
                 </div>
-                <button type="submit" className="compose-submit" disabled={!file || isUploading}>
-                    {isUploading ? 'Uploading…' : 'Upload'}
-                </button>
+                <div className="compose-actions">
+                    <button type="button" className="compose-cancel" onClick={onCancel} disabled={isUploading}>
+                        Cancel
+                    </button>
+                    <button type="submit" className="compose-submit" disabled={!file || isUploading}>
+                        {isUploading ? 'Uploading…' : 'Upload'}
+                    </button>
+                </div>
             </div>
         </form>
     );

@@ -120,6 +120,20 @@ h1, h2, h3, h4, h5, h6 {
     }
 }
 
+/* The highlight behind the chosen tab. It is one element per tab group that
+   Motion slides between tabs (layoutId); the label sits on top of it. */
+.tab-pill {
+    position: absolute;
+    inset: 0;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+.tab-label {
+    position: relative;
+}
+
 .app-layout {
     display: flex;
     flex-direction: column;
