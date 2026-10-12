@@ -49,6 +49,14 @@
     to { stroke-dashoffset: 100; }
 }
 
+/* A timer, not decoration: it keeps its pace when motion is turned down,
+   over the blanket rule in index.css. */
+@media (prefers-reduced-motion: reduce) {
+    .id-code-ring rect {
+        animation-duration: var(--reveal) !important;
+    }
+}
+
 /* Only the characters cloud over; the chip around them stays sharp. They
    clear at once and cloud over slowly, so a reveal running out fades rather
    than snapping shut. */
@@ -58,7 +66,6 @@
     transition: filter 1.6s var(--ease);
 }
 
-.id-code:focus-visible .id-code-text,
 .id-code.is-revealed .id-code-text {
     filter: none;
     transition-duration: 150ms;

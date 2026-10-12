@@ -51,7 +51,10 @@ async function handleApiResponse(response) {
     }
 
     if (!response.ok) {
-        throw apiError(json.detail || json.message || 'Request failed', response.status);
+        // FastAPI's own validation errors list what failed as objects; their
+        // messages read better than "[object Object]".
+        const detail = Array.isArray(json.detail) ? json.detail.map((d) => d.msg).join('; ') : json.detail;
+        throw apiError(detail || json.message || 'Request failed', response.status);
     }
     return json;
 }
@@ -190,7 +193,9 @@ export async function getPublicSessions() {
     return data.sessions ?? [];
 }
 
-export async function createTextBlock(sessionId, userId, content) {
+// `clientRef` comes back in the block_created broadcast, so the page that
+// saved can pick its own new block out; see heldRef in ClipboardInterface.
+export async function createTextBlock(sessionId, userId, content, clientRef = null) {
     const encryptedContent = await encrypt(content);
     const response = await fetch(`${await getApiBase()}/block/create`, {
         method: 'POST',
@@ -200,6 +205,7 @@ export async function createTextBlock(sessionId, userId, content) {
             user_id: userId,
             type: 'text',
             content: encryptedContent,
+            client_ref: clientRef,
         }),
     });
     return handleApiResponse(response);
@@ -217,7 +223,7 @@ export function checkFileSize(file) {
     }
 }
 
-export async function uploadFileBlock(sessionId, userId, file) {
+export async function uploadFileBlock(sessionId, userId, file, clientRef = null) {
     checkFileSize(file);
     const arrayBuffer = await file.arrayBuffer();
     const encryptedBytes = await encrypt(new Uint8Array(arrayBuffer));
@@ -225,6 +231,7 @@ export async function uploadFileBlock(sessionId, userId, file) {
     const formData = new FormData();
     formData.append('connection_id', sessionId);
     formData.append('user_id', userId);
+    if (clientRef) formData.append('client_ref', clientRef);
     const blob = new Blob([encryptedBytes], {type: 'application/octet-stream'});
     formData.append('file', blob, file.name);
 

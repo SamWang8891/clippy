@@ -207,6 +207,7 @@ export function SessionEntry() {
                         value={userName}
                         onChange={(e) => setUserName(e.target.value)}
                         placeholder="Leave blank for assigned name"
+                        maxLength={64}
                         disabled={loading}
                         autoComplete="off"
                         {...NO_PASSWORD_MANAGERS}

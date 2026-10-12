@@ -149,14 +149,22 @@ export function ClipboardInterface() {
     const askingRef = useRef(false);
     // A saved item waits for the composer to fold away before it joins the
     // list, so the card closing and the block arriving do not shove each
-    // other about. Only our own new blocks wait, and only while a save of
-    // ours is out: null, or the blocks held back.
-    const heldBlocksRef = useRef(null);
+    // other about. Only the block that save made waits — the server echoes
+    // the save's ref with it — and everything else arrives as it comes.
+    // Held, it still takes any edit or delete meant for it. null, or
+    // {ref, blocks}.
+    const heldRef = useRef(null);
     const releaseHeldBlocks = useCallback(() => {
-        const held = heldBlocksRef.current;
-        heldBlocksRef.current = null;
+        const held = heldRef.current?.blocks;
+        heldRef.current = null;
         if (held?.length) setBlocks((prev) => [...prev, ...held.filter((b) => !prev.some((p) => p.id === b.id))]);
     }, []);
+    // While a save is out the composer stays: a press outside used to offer
+    // to discard work already on its way to the server.
+    const savingRef = useRef(false);
+    // For socket handlers, which outlive the render they were made in.
+    const isHostRef = useRef(false);
+    const allowEditRef = useRef(false);
     const [newBlockType, setNewBlockType] = useState('text');
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [pendingUploads, setPendingUploads] = useState(0);
@@ -187,6 +195,10 @@ export function ClipboardInterface() {
     // Off until the session has loaded, so a read-only room never flashes its
     // composer at a visitor. The server refuses the writes either way.
     const canEdit = Boolean(session) && (session.allow_edit || Boolean(currentUser?.is_host));
+    useEffect(() => {
+        isHostRef.current = Boolean(currentUser?.is_host);
+        allowEditRef.current = Boolean(session?.allow_edit);
+    });
 
     useEffect(() => {
         if (!sessionData?.connection_id) return;
@@ -270,6 +282,12 @@ export function ClipboardInterface() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // closeComposer, for the socket handler below, which is declared first.
+    const endComposing = () => {
+        composeDirtyRef.current = false;
+        setIsCreating(false);
+    };
+
     const handleWebSocketMessage = useCallback((message) => {
         switch (message.type) {
             case 'user_joined':
@@ -296,14 +314,17 @@ export function ClipboardInterface() {
                 break;
 
             case 'block_created':
-                if (heldBlocksRef.current && message.block.created_by === myPublicId) {
-                    heldBlocksRef.current.push(message.block);
+                if (message.client_ref && message.client_ref === heldRef.current?.ref) {
+                    heldRef.current = {...heldRef.current, blocks: [...heldRef.current.blocks, message.block]};
                     break;
                 }
                 setBlocks((prev) => [...prev, message.block]);
                 break;
 
             case 'block_deleted':
+                if (heldRef.current) {
+                    heldRef.current = {...heldRef.current, blocks: heldRef.current.blocks.filter((b) => b.id !== message.block_id)};
+                }
                 // AnimatePresence fades it out while the blocks below slide up.
                 setBlocks((prev) => prev.filter((b) => b.id !== message.block_id));
                 break;
@@ -318,6 +339,9 @@ export function ClipboardInterface() {
             }
 
             case 'block_updated':
+                if (heldRef.current) {
+                    heldRef.current = {...heldRef.current, blocks: heldRef.current.blocks.map((b) => b.id === message.block.id ? message.block : b)};
+                }
                 setBlocks((prev) => prev.map((b) => b.id === message.block.id ? message.block : b));
                 break;
 
@@ -330,6 +354,9 @@ export function ClipboardInterface() {
             }
 
             case 'host_transferred':
+                // Losing the seat in a room kept to its host ends composing,
+                // as losing editing does below.
+                if (message.new_host_id !== myPublicId && !allowEditRef.current) endComposing();
                 setUsers((prev) => prev.map((u) => ({...u, is_host: u.id === message.new_host_id})));
                 setSession((prev) => ({...prev, host_id: message.new_host_id}));
                 if (message.new_host_id === myPublicId) {
@@ -350,6 +377,10 @@ export function ClipboardInterface() {
                 break;
 
             case 'edit_permission_changed':
+                // Composing ends with the right to: left merely hidden, the
+                // composer came back — empty, focused and scrolled to — the
+                // moment editing was handed out again.
+                if (!message.allow_edit && !isHostRef.current) endComposing();
                 setSession((prev) => ({...prev, allow_edit: message.allow_edit}));
                 break;
 
@@ -434,7 +465,7 @@ export function ClipboardInterface() {
         let swallowClick = false;
         const onMouseDown = async (e) => {
             swallowClick = false;
-            if (e.button !== 0 || askingRef.current) return;
+            if (e.button !== 0 || askingRef.current || savingRef.current) return;
             const target = e.target;
             if (composeRef.current?.contains(target) || target === document.documentElement) return;
             if (target.closest?.('.toast-container, .confirm-dialog, .confirm-overlay, .block-handle')) return;
@@ -500,23 +531,31 @@ export function ClipboardInterface() {
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [canEdit, isCreating]);
 
-    // Holds our new block back until the composer has folded; see
-    // heldBlocksRef. Rethrown so the form knows to offer its button again.
+    // Holds the new block back until the composer has folded; see heldRef.
+    // `save` is given the ref to send with it. Rethrown so the form knows to
+    // offer its button again.
     const saveThenFold = async (save, failure) => {
-        heldBlocksRef.current = heldBlocksRef.current ?? [];
+        releaseHeldBlocks();  // anything a previous save still holds
+        const ref = crypto.randomUUID();
+        heldRef.current = {ref, blocks: []};
+        savingRef.current = true;
         try {
-            await save();
+            await save(ref);
         } catch (err) {
             releaseHeldBlocks();
             toast.error(failure + err.message);
             throw err;
+        } finally {
+            savingRef.current = false;
         }
         closeComposer();
-        setTimeout(releaseHeldBlocks, HOLD_FALLBACK_MS);
+        setTimeout(() => {
+            if (heldRef.current?.ref === ref) releaseHeldBlocks();
+        }, HOLD_FALLBACK_MS);
     };
 
     const handleCreateTextBlock = async (content) => {
-        await saveThenFold(() => createTextBlock(sessionData.connection_id, sessionData.user_id, content), 'Failed to save: ');
+        await saveThenFold((ref) => createTextBlock(sessionData.connection_id, sessionData.user_id, content, ref), 'Failed to save: ');
         toast.success('Saved');
     };
 
@@ -536,7 +575,7 @@ export function ClipboardInterface() {
     };
 
     const handleUploadFile = async (file) => {
-        await saveThenFold(() => uploadFileBlock(sessionData.connection_id, sessionData.user_id, file), 'Failed to upload: ');
+        await saveThenFold((ref) => uploadFileBlock(sessionData.connection_id, sessionData.user_id, file, ref), 'Failed to upload: ');
         toast.success('Uploaded');
     };
 
@@ -726,8 +765,10 @@ export function ClipboardInterface() {
         }
         undo.record('Deleted', async () => {
             const data = await restoreBlock(sessionData.connection_id, sessionData.user_id, blockId);
+            // The newest order heard, which may be later than this reply.
             noteOrder(newestOrderRef, data);
-            setBlocks((prev) => withRestored(prev, data.block, pendingMovesRef.current === 0 ? data.order : null));
+            const order = pendingMovesRef.current === 0 ? newestOrderRef.current.order : null;
+            setBlocks((prev) => withRestored(prev, data.block, order));
         });
     };
 
@@ -912,7 +953,11 @@ export function ClipboardInterface() {
                     the list runs smoothly instead of being cut. When the list
                     above grows, its frame eases the slot down. */}
                 <div className="compose-slot">
-                <AnimatePresence initial={false} onExitComplete={releaseHeldBlocks}>
+                {/* Only the composer folding away lets a held block in: New
+                    item folding as the composer opens is an exit too. */}
+                <AnimatePresence initial={false} onExitComplete={() => {
+                    if (!isCreating) releaseHeldBlocks();
+                }}>
                 {!canEdit ? null : isCreating ? (
                     <motion.div
                         key={`compose-${composeSession}`}
@@ -1177,7 +1222,7 @@ function TextBlockForm({mode = 'text', onSubmit, onCancel, onDirtyChange, initia
                     </AnimatePresence>
                 </div>
                 <div className="compose-actions">
-                    <button type="button" className="compose-cancel" onClick={onCancel}>
+                    <button type="button" className="compose-cancel" onClick={onCancel} disabled={isSaving}>
                         Cancel
                     </button>
                     <button type="submit" className="compose-submit" disabled={!content.trim() || isSaving}>

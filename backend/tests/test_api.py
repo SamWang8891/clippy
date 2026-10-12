@@ -956,6 +956,25 @@ def test_restoring_respects_the_block_cap(client, monkeypatch):
     assert r.status_code == 413
 
 
+def test_a_new_block_names_the_save_it_came_from(client):
+    """The page that saved holds its own new block back until its composer has
+    folded, and needs to tell that block from any other it creates meanwhile."""
+    host = _create_session(client)
+    cid, uid = host["connection_id"], host["user_id"]
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[uid]) as ws:
+        client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": uid, "type": "text", "content": "t", "client_ref": "save-1"})
+        assert ws.receive_json()["client_ref"] == "save-1"
+        client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid, "client_ref": "save-2"},
+                    files={"file": ("f.bin", b"f")})
+        assert ws.receive_json()["client_ref"] == "save-2"
+        client.post("/api/v2/block/create", json={"connection_id": cid, "user_id": uid, "type": "text", "content": "u"})
+        assert ws.receive_json()["client_ref"] is None
+    long_ref = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": uid, "type": "text", "content": "v", "client_ref": "x" * 65})
+    assert long_ref.status_code == 422
+
+
 def test_block_order_survives_a_restart():
     import app as app_module
 

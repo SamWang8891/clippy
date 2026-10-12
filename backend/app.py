@@ -269,6 +269,9 @@ class CreateBlockRequest(BaseModel):
     # upload has no filename and can never be downloaded.
     type: Literal["text"] = "text"
     content: str | None = Field(default=None, max_length=MAX_TEXT_BLOCK_LENGTH)
+    # Echoed in the block_created broadcast, so the page that saved can tell
+    # its own new block from any other; see client_ref in the frontend.
+    client_ref: str | None = Field(default=None, max_length=64)
 
 
 class DeleteBlockRequest(BaseModel):
@@ -1735,7 +1738,8 @@ async def create_text_block(request: CreateBlockRequest):
     # Broadcast new block
     await session.broadcast({
         "type": "block_created",
-        "block": block.model_dump()
+        "block": block.model_dump(),
+        "client_ref": request.client_ref,
     })
 
     return api_response(
@@ -1754,6 +1758,7 @@ async def upload_file_block(
         connection_id: str = Form(...),  # noqa: B008 — FastAPI dependency markers.
         user_id: str = Form(...),  # noqa: B008
         file: UploadFile = File(...),  # noqa: B008
+        client_ref: str | None = Form(None, max_length=64),  # noqa: B008 — as for text blocks
 ):
     """
     Upload a file to the session.
@@ -1842,7 +1847,8 @@ async def upload_file_block(
     # Broadcast new block
     await session.broadcast({
         "type": "block_created",
-        "block": block.model_dump()
+        "block": block.model_dump(),
+        "client_ref": client_ref,
     })
 
     return api_response(

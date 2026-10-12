@@ -4,9 +4,12 @@ import {useCallback, useEffect, useState} from 'react';
 // back holds the clock this long, so the next press can follow it.
 const UNDO_WINDOW_MS = 10000;
 const HOLD_MS = 5000;
-// ponytail: the server keeps a deleted block for TRASH_SECONDS (120s); this
-// many steps back, every one holding the clock, still lands inside that.
 const MAX_STEPS = 20;
+// A step this old is dropped whatever the clock says: the server keeps a
+// deleted block for TRASH_SECONDS (120s), and a run of changes, each starting
+// the clock over, could otherwise keep a delete on offer past that.
+const MAX_STEP_AGE_MS = 90000;
+const fresh = (steps, now) => steps.filter((step) => now - step.at < MAX_STEP_AGE_MS);
 
 const CLOSED = {steps: [], deadline: 0, heldUntil: 0};
 
@@ -27,7 +30,7 @@ export function useUndo() {
     const record = useCallback((label, undo) => {
         const at = Date.now();
         setClock((prev) => ({
-            steps: [...prev.steps, {label, undo}].slice(-MAX_STEPS),
+            steps: [...fresh(prev.steps, at), {label, undo, at}].slice(-MAX_STEPS),
             deadline: at + UNDO_WINDOW_MS,
             heldUntil: 0,
         }));
@@ -35,11 +38,12 @@ export function useUndo() {
 
     // Takes the newest step off and holds the clock; returns it to be run.
     const takeBack = useCallback(() => {
-        const step = clock.steps.at(-1);
-        if (!step) return null;
         const at = Date.now();
+        const steps = fresh(clock.steps, at);
+        const step = steps.at(-1);
+        if (!step) return null;
         const left = timeLeft(clock, at);
-        setClock({steps: clock.steps.slice(0, -1), heldUntil: at + HOLD_MS, deadline: at + HOLD_MS + left});
+        setClock({steps: steps.slice(0, -1), heldUntil: at + HOLD_MS, deadline: at + HOLD_MS + left});
         return step;
     }, [clock]);
 
