@@ -33,18 +33,12 @@
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow);
     pointer-events: auto;
-    animation: toast-in 180ms var(--ease);
 }
 
 @media (max-width: 639px) {
     .toast {
         max-width: none;
     }
-}
-
-@keyframes toast-in {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
 }
 
 .toast-success {

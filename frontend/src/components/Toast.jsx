@@ -1,16 +1,25 @@
 import React, { useEffect } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { IconButton } from './IconButton';
 import { Check } from './animate-ui/icons/check';
 import { X } from './animate-ui/icons/x';
 import './Toast.css';
 
-export function Toast({ message, type = 'info', onClose, duration = 3000 }) {
+// On a phone the stack hangs from the top of the screen, so toasts drop in
+// from above; elsewhere they rise from the bottom corner.
+const FROM_TOP = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 639px)').matches);
+const QUICK = { duration: 0.2, ease: [0.2, 0, 0, 1] };
+
+// Each toast keeps its own clock. It used to restart whenever any other toast
+// came or went, since the close callback was new on every render. `ref` is
+// what lets popLayout lift a leaving toast out of the stack.
+export function Toast({ ref, id, message, type = 'info', onDismiss, duration = 3000 }) {
   useEffect(() => {
     if (duration > 0) {
-      const timer = setTimeout(onClose, duration);
+      const timer = setTimeout(() => onDismiss(id), duration);
       return () => clearTimeout(timer);
     }
-  }, [duration, onClose]);
+  }, [id, duration, onDismiss]);
 
   const icons = {
     // Drawn in as the toast arrives, so the outcome reads before the words do.
@@ -23,29 +32,43 @@ export function Toast({ message, type = 'info', onClose, duration = 3000 }) {
     )
   };
 
+  // layout="position": when one leaves, the rest slide into its place.
   return (
-    <div className={`toast toast-${type}`}>
+    <motion.div
+      ref={ref}
+      className={`toast toast-${type}`}
+      layout="position"
+      initial={{ opacity: 0, y: FROM_TOP ? -12 : 12, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.15 } }}
+      transition={QUICK}
+    >
       <div className="toast-icon">
         {icons[type]}
       </div>
       <div className="toast-message">{message}</div>
-      <IconButton icon={X} size={16} className="toast-close" onClick={onClose} aria-label="Close" />
-    </div>
+      <IconButton icon={X} size={16} className="toast-close" onClick={() => onDismiss(id)} aria-label="Close" />
+    </motion.div>
   );
 }
 
+// popLayout lifts a leaving toast out of the stack at once, so the others
+// start moving while it fades.
 export function ToastContainer({ toasts, removeToast }) {
   return (
     <div className="toast-container">
-      {toasts.map((toast) => (
-        <Toast
-          key={toast.id}
-          message={toast.message}
-          type={toast.type}
-          duration={toast.duration}
-          onClose={() => removeToast(toast.id)}
-        />
-      ))}
+      <AnimatePresence initial={false} mode="popLayout">
+        {toasts.map((toast) => (
+          <Toast
+            key={toast.id}
+            id={toast.id}
+            message={toast.message}
+            type={toast.type}
+            duration={toast.duration}
+            onDismiss={removeToast}
+          />
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
