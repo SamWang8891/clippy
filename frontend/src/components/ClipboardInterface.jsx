@@ -33,6 +33,7 @@ import {Upload} from './animate-ui/icons/upload';
 import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
+import {SHOWS_UNDO_BAR, UndoBar} from './UndoBar';
 import {storeName} from './SessionEntry';
 import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
 import './ClipboardInterface.css';
@@ -470,7 +471,7 @@ export function ClipboardInterface() {
             if (e.button !== 0 || askingRef.current || savingRef.current) return;
             const target = e.target;
             if (composeRef.current?.contains(target) || target === document.documentElement) return;
-            if (target.closest?.('.toast-container, .confirm-dialog, .confirm-overlay, .block-handle')) return;
+            if (target.closest?.('.toast-container, .confirm-dialog, .confirm-overlay, .block-handle, .undo-bar')) return;
             if (!composeDirtyRef.current) {
                 closeComposer();
                 return;
@@ -565,7 +566,7 @@ export function ClipboardInterface() {
         const before = blocksRef.current.find((b) => b.id === blockId)?.content;
         try {
             await updateTextBlock(sessionData.connection_id, sessionData.user_id, blockId, content);
-            toast.success('Updated');
+            if (!SHOWS_UNDO_BAR) toast.success('Updated');  // the bar says it on a phone
         } catch (err) {
             toast.error('Failed to update: ' + err.message);
             throw err;
@@ -760,7 +761,7 @@ export function ClipboardInterface() {
     const handleDeleteBlock = async (blockId) => {
         try {
             await deleteBlock(sessionData.connection_id, sessionData.user_id, blockId);
-            toast.success('Deleted');
+            if (!SHOWS_UNDO_BAR) toast.success('Deleted');  // the bar says it on a phone
         } catch (err) {
             toast.error('Failed to delete: ' + err.message);
             return;
@@ -775,8 +776,8 @@ export function ClipboardInterface() {
     };
 
     // One step back: the newest change undone, and the clock held so the
-    // next press can follow. Nothing on screen speaks of undo, a failure
-    // included; the change itself, or its absence, is the answer.
+    // next press can follow. A failure says nothing; the change itself, or
+    // its absence, is the answer.
     const stepBack = async () => {
         const step = undo.takeBack();
         if (!step) return;
@@ -1080,6 +1081,8 @@ export function ClipboardInterface() {
                     </div>
                 </div>
             )}
+
+            {canEdit && <UndoBar step={undo.step} onUndo={stepBack} />}
 
             {notification && <Notification text={notification}/>}
         </div>

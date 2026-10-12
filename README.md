@@ -50,7 +50,7 @@ Tired of sharing text / files across different computers? Try this clippy!
     - Host can transfer host rights to other users
     - Host can control whether new users can join
 - **Session persistence**: Sessions remain active until destroyed by host or after 1 hour of inactivity. When one expires or is destroyed, the tab returns to the dashboard on its own instead of stopping at a warning
-- **Block system**: Add, edit and delete text or file blocks, similar to Jupyter notebooks, and drag them into order by the grip on their right edge (or move them with the arrow keys on it). A delete, move or edit can be taken back with Cmd/Ctrl+Z for ten seconds; each step back holds that window open for five more, so several changes can be walked back in a row
+- **Block system**: Add, edit and delete text or file blocks, similar to Jupyter notebooks, and drag them into order by the grip on their right edge (or move them with the arrow keys on it). A delete, move or edit can be taken back with Cmd/Ctrl+Z, or the Undo bar on a touch screen, for ten seconds; each step back holds that window open for five more, so several changes can be walked back in a row
 
 ---
 
