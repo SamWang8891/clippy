@@ -16,6 +16,31 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--bg-elev);
+    cursor: pointer;
+}
+
+/* Only the characters cloud over; the chip around them stays sharp. They
+   clear at once and cloud over slowly, so a reveal running out fades rather
+   than snapping shut. */
+.id-code-text {
+    display: inline-block;
+    filter: blur(5px);
+    transition: filter 1.6s var(--ease);
+}
+
+.id-code:focus-visible .id-code-text,
+.id-code.is-revealed .id-code-text {
+    filter: none;
+    transition-duration: 150ms;
+}
+
+/* A tap leaves :hover stuck on until the next tap elsewhere, which would
+   outlast the twenty seconds; touch screens go by the press alone. */
+@media (hover: hover) {
+    .id-code:hover .id-code-text {
+        filter: none;
+        transition-duration: 150ms;
+    }
 }
 
 .id-btn {

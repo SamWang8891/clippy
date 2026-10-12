@@ -26,6 +26,10 @@ const IconQr = ({size, ...props}) => (
     </svg>
 );
 
+// The ID is the room's key, so it sits blurred until someone looks: hovering
+// shows it, and a press shows it for this long before it clouds over again.
+const REVEAL_MS = 20000;
+
 // [what everyone is told, what the host is told]
 const LOCK_TITLES = {
     false: ['Private', 'Private — click to list on the home page'],
@@ -43,6 +47,16 @@ export function Id({sessionData, isPublic = false, allowEdit = false, canChange 
     const qrButtonRef = useRef(null);
     const popupRef = useRef(null);
     const toast = useToast();
+    const [revealed, setRevealed] = useState(false);
+    const revealTimerRef = useRef(null);
+
+    // Pressing again starts the twenty seconds over.
+    const reveal = () => {
+        setRevealed(true);
+        clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = setTimeout(() => setRevealed(false), REVEAL_MS);
+    };
+    useEffect(() => () => clearTimeout(revealTimerRef.current), []);
 
     const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
 
@@ -91,7 +105,9 @@ export function Id({sessionData, isPublic = false, allowEdit = false, canChange 
 
     return (
         <div className="id">
-            <span className="id-code">{sessionData?.connection_id}</span>
+            <button type="button" className={`id-code ${revealed ? 'is-revealed' : ''}`} onClick={reveal}>
+                <span className="id-code-text">{sessionData?.connection_id}</span>
+            </button>
             <IconButton
                 icon={Copy}
                 size={14}
