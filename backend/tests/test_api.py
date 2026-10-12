@@ -620,3 +620,56 @@ def test_snapshots_from_two_state_visibility_load_as_they_behaved():
     assert restored() == "private"
     assert restored(visibility="public_read") == "public_read"
     assert restored(visibility="nonsense") == "private"
+
+
+def test_blocks_move_after_an_anchor_and_the_order_sticks(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    ids = [client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": c,
+    }).json()["data"]["block_id"] for c in ("a", "b", "c")]
+    a, b, c = ids
+
+    def move(member, block_id, after_id):
+        return client.post("/api/v2/block/move", json={
+            "connection_id": cid, "user_id": member["user_id"], "block_id": block_id, "after_id": after_id,
+        })
+
+    def order():
+        blocks = client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["blocks"]
+        return [blk["id"] for blk in blocks]
+
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
+        assert move(host, c, None).json()["data"]["order"] == [c, a, b]
+        assert ws.receive_json() == {"type": "blocks_reordered", "order": [c, a, b]}
+    assert move(guest, c, b).status_code == 200
+    assert order() == [a, b, c]
+
+    # Bad anchors are refused rather than guessed at.
+    assert move(host, a, a).status_code == 404
+    assert move(host, a, "missing").status_code == 404
+    assert move(host, "missing", None).status_code == 404
+
+    # Reordering is a write: a read-only room keeps it to the host.
+    _set_visibility(client, host, "public_read")
+    assert move(guest, a, c).status_code == 403
+    assert move(host, a, c).status_code == 200
+    assert order() == [b, c, a]
+
+
+def test_block_order_survives_a_restart():
+    import app as app_module
+
+    session = app_module.Session("orderx", "tok", "uid", "Host")
+    for bid in ("x", "y", "z"):
+        session.add_block(app_module.Block(id=bid, type="text", created_by="uid", created_at="t"))
+    session.move_block("z", None)
+    restored = app_module.Session.from_dict(json_roundtrip(session.to_dict()))
+    assert list(restored.blocks) == ["z", "x", "y"]
+
+
+def json_roundtrip(data):
+    import json
+
+    return json.loads(json.dumps(data))

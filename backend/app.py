@@ -266,6 +266,16 @@ class DeleteBlockRequest(BaseModel):
     block_id: str = Field(min_length=1, max_length=64)
 
 
+class MoveBlockRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
+    # The block it should follow; None puts it first. An anchor rather than an
+    # index, so a block added or removed by someone else meanwhile does not
+    # shift where this one lands.
+    after_id: str | None = Field(default=None, max_length=64)
+
+
 class UpdateTextBlockRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
@@ -492,6 +502,17 @@ class Session:
         self.blocks[block.id] = block
         self.block_bytes[block.id] = byte_size
         self.total_bytes += byte_size
+        self.update_activity()
+
+    def move_block(self, block_id: str, after_id: str | None) -> None:
+        """Re-seat a block right after ``after_id``, or first when it is None.
+
+        Order is the dict's insertion order, which is also what gets persisted,
+        so moving a block means rebuilding the dict around it.
+        """
+        order = [bid for bid in self.blocks if bid != block_id]
+        order.insert(order.index(after_id) + 1 if after_id else 0, block_id)
+        self.blocks = {bid: self.blocks[bid] for bid in order}
         self.update_activity()
 
     def delete_block(self, block_id: str):
@@ -1869,6 +1890,42 @@ async def replace_file_block(
         "File replaced",
         {"block": block.model_dump()},
     )
+
+
+@router.post(
+    "/block/move",
+    summary="Move Block",
+    description="Place a block right after another one, or first"
+)
+async def move_block(request: MoveBlockRequest):
+    """
+    Reorder the session's blocks. Writers only — in a read-only room that is
+    the host — and everyone receives the full new order, so a client that
+    missed an earlier move still ends up matching the server.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
+
+    if request.block_id not in session.blocks:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+    if request.after_id is not None and (
+            request.after_id == request.block_id or request.after_id not in session.blocks):
+        return api_response(HTTPStatus.NOT_FOUND, "Anchor block not found")
+
+    session.move_block(request.block_id, request.after_id)
+    order = list(session.blocks)
+
+    await session.broadcast({"type": "blocks_reordered", "order": order})
+
+    return api_response(HTTPStatus.OK, "Block moved", {"order": order})
 
 
 @router.delete(
