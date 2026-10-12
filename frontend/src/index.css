@@ -60,6 +60,14 @@ html, body, #root {
     min-height: 100vh;
 }
 
+/* No scroll anchoring. A block arriving above the view made the browser
+   scroll to hold whatever it had picked as its anchor still — the desk, or
+   failing that the footer — which shoved the page under an eased move. Here
+   content moves and the scroll position stays put. */
+html {
+    overflow-anchor: none;
+}
+
 /* Ligatures off everywhere: this is a clipboard, so text must look exactly as
    typed. JetBrains Mono's contextual alternates drew "// " as a single slash —
    the first one vanished the moment a space followed it — and fonts with code

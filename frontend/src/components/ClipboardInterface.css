@@ -226,11 +226,18 @@
     font-family: var(--font-mono);
 }
 
+/* The list's own trailing space is inside what the frame measures, so the
+   gap to what follows eases with it; the frame hands back the body's gap. */
 .desk-blocks {
     position: relative;
     display: flex;
     flex-direction: column;
     gap: 12px;
+    padding-bottom: 16px;
+}
+
+.desk-blocks-frame {
+    margin-bottom: -16px;
 }
 
 .desk-blocks:empty {

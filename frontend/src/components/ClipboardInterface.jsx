@@ -31,7 +31,6 @@ import {Upload} from './animate-ui/icons/upload';
 import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
-import {UndoBar} from './UndoBar';
 import {storeName} from './SessionEntry';
 import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
 import './ClipboardInterface.css';
@@ -54,6 +53,35 @@ const anchorOf = (ids, id) => ids[ids.indexOf(id) - 1] ?? null;
 function centerInView(node) {
     const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     node?.scrollIntoView({behavior: still ? 'auto' : 'smooth', block: 'center'});
+}
+
+// The list's height, eased: whatever changes it — a block arriving, leaving,
+// decrypting into its full length, opening for an edit — what sits below
+// moves smoothly instead of jumping, and the page's end with it, so a scroll
+// pinned there follows at the same pace. The frame clips only while it
+// moves, starting before the frame paints so a taller list never spills
+// over what is below; at rest a block's language list may hang out of it.
+// Returns the cleanup.
+const EASE = {duration: 260, easing: 'cubic-bezier(0.3, 0, 0.2, 1)'};
+function easeListHeight(frame, list, easesRef) {
+    let last = list.offsetHeight;
+    frame.style.height = `${last}px`;
+    const observer = new window.ResizeObserver(() => {
+        const to = list.offsetHeight;
+        if (to === last) return;
+        last = to;
+        const from = frame.getBoundingClientRect().height;
+        frame.getAnimations().forEach((a) => a.cancel());
+        frame.style.height = `${to}px`;
+        const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+        if (!easesRef.current || still) return;
+        frame.style.overflowY = 'clip';
+        frame.animate([{height: `${from}px`}, {height: `${to}px`}], EASE).onfinish = () => {
+            frame.style.overflowY = '';
+        };
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
 }
 
 // The blocks with a restored one back among them, in `order` when given.
@@ -145,6 +173,12 @@ export function ClipboardInterface() {
     const pendingMovesRef = useRef(0);
     const newestOrderRef = useRef({version: 0, order: null});
     const undo = useUndo();
+    // See easeListHeight; the frame around the list, and what it measures.
+    const listFrameRef = useRef(null);
+    const listRef = useRef(null);
+    // Off until the first load has laid out, so opening a session does not
+    // unroll its whole list.
+    const listEasesRef = useRef(false);
     useEffect(() => {
         blocksRef.current = blocks;
     }, [blocks]);
@@ -175,6 +209,15 @@ export function ClipboardInterface() {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionData]);
+
+    useEffect(() => easeListHeight(listFrameRef.current, listRef.current, listEasesRef), []);
+    useEffect(() => {
+        if (!session) return undefined;
+        const timer = setTimeout(() => {
+            listEasesRef.current = true;
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [session]);
 
     const loadSession = async () => {
         try {
@@ -477,11 +520,11 @@ export function ClipboardInterface() {
         toast.success('Saved');
     };
 
-    // The bar below says it and offers it back, so there is no toast as well.
     const handleUpdateText = async (blockId, content) => {
         const before = blocksRef.current.find((b) => b.id === blockId)?.content;
         try {
             await updateTextBlock(sessionData.connection_id, sessionData.user_id, blockId, content);
+            toast.success('Updated');
         } catch (err) {
             toast.error('Failed to update: ' + err.message);
             throw err;
@@ -676,6 +719,7 @@ export function ClipboardInterface() {
     const handleDeleteBlock = async (blockId) => {
         try {
             await deleteBlock(sessionData.connection_id, sessionData.user_id, blockId);
+            toast.success('Deleted');
         } catch (err) {
             toast.error('Failed to delete: ' + err.message);
             return;
@@ -688,14 +732,15 @@ export function ClipboardInterface() {
     };
 
     // One step back: the newest change undone, and the clock held so the
-    // next press can follow.
+    // next press can follow. Nothing on screen speaks of undo, a failure
+    // included; the change itself, or its absence, is the answer.
     const stepBack = async () => {
         const step = undo.takeBack();
         if (!step) return;
         try {
             await step.undo();
         } catch (err) {
-            toast.error('Failed to undo: ' + err.message);
+            console.error('Undo failed:', err);
         }
     };
 
@@ -828,6 +873,8 @@ export function ClipboardInterface() {
                     </div>
                 )}
 
+                <div className="desk-blocks-frame" ref={listFrameRef}>
+                <div ref={listRef}>
                 <Reorder.Group
                     as="div"
                     axis="y"
@@ -856,13 +903,15 @@ export function ClipboardInterface() {
                         ))}
                     </AnimatePresence>
                 </Reorder.Group>
+                </div>
+                </div>
 
                 {/* Whichever way the composer closes — Cancel, Esc, a press
                     outside, Save — it folds down as New item unfolds, and
                     opening is the same move in reverse, so the height below
-                    the list runs smoothly instead of being cut. The slot slides
-                    when the list above it grows, as a saved item joins it. */}
-                <motion.div className="compose-slot" layout="position" transition={FOLD_TIMING}>
+                    the list runs smoothly instead of being cut. When the list
+                    above grows, its frame eases the slot down. */}
+                <div className="compose-slot">
                 <AnimatePresence initial={false} onExitComplete={releaseHeldBlocks}>
                 {!canEdit ? null : isCreating ? (
                     <motion.div
@@ -956,7 +1005,7 @@ export function ClipboardInterface() {
                     </motion.div>
                 )}
                 </AnimatePresence>
-                </motion.div>
+                </div>
             </div>
 
             {(isDraggingFiles || pendingUploads > 0) && (
@@ -969,8 +1018,6 @@ export function ClipboardInterface() {
                     </div>
                 </div>
             )}
-
-            {canEdit && <UndoBar step={undo.step} onUndo={stepBack} />}
 
             {notification && <Notification text={notification}/>}
         </div>
