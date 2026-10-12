@@ -261,14 +261,14 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     assert _public(client) == []
 
     # A guest must not be able to publish someone else's session.
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": guest["user_id"], "is_public": True,
+    r = client.post("/api/v2/session/visibility", json={
+        "connection_id": cid, "user_id": guest["user_id"], "visibility": "public_read",
     })
     assert r.status_code == 403
     assert _public(client) == []
 
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+    r = client.post("/api/v2/session/visibility", json={
+        "connection_id": cid, "user_id": host["user_id"], "visibility": "public_read",
     })
     assert r.status_code == 200
 
@@ -276,26 +276,26 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     assert [e["connection_id"] for e in listed] == [cid]
     assert listed[0]["name"] == "Alice"
     assert listed[0]["created_at"] and listed[0]["last_activity"]
-    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["visibility"] == "public_read"
 
     # A guest cannot take it down either.
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": guest["user_id"], "is_public": False,
+    r = client.post("/api/v2/session/visibility", json={
+        "connection_id": cid, "user_id": guest["user_id"], "visibility": "private",
     })
     assert r.status_code == 403
 
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+    r = client.post("/api/v2/session/visibility", json={
+        "connection_id": cid, "user_id": host["user_id"], "visibility": "private",
     })
     assert r.status_code == 200
     assert _public(client) == []
 
 
 def _publish(client, member, expect=200):
-    r = client.post("/api/v2/session/toggle_public", json={
+    r = client.post("/api/v2/session/visibility", json={
         "connection_id": member["connection_id"],
         "user_id": member["user_id"],
-        "is_public": True,
+        "visibility": "public_read",
     })
     assert r.status_code == expect, r.text
 
@@ -368,14 +368,14 @@ def test_lobby_socket_pushes_appearances_and_disappearances(client):
     with client.websocket_connect("/ws/lobby") as ws:
         assert ws.receive_json() == {"type": "public_sessions", "sessions": []}
 
-        client.post("/api/v2/session/toggle_public", json={
-            "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+        client.post("/api/v2/session/visibility", json={
+            "connection_id": cid, "user_id": host["user_id"], "visibility": "public_read",
         })
         appeared = ws.receive_json()
         assert [e["connection_id"] for e in appeared["sessions"]] == [cid]
 
-        client.post("/api/v2/session/toggle_public", json={
-            "connection_id": cid, "user_id": host["user_id"], "is_public": False,
+        client.post("/api/v2/session/visibility", json={
+            "connection_id": cid, "user_id": host["user_id"], "visibility": "private",
         })
         assert ws.receive_json()["sessions"] == []
 
@@ -386,10 +386,10 @@ def test_public_listing_is_capped_and_newest_first(client):
     created = []
     for _ in range(app_module.MAX_PUBLIC_SESSIONS + 2):
         host = _create_session(client)
-        r = client.post("/api/v2/session/toggle_public", json={
+        r = client.post("/api/v2/session/visibility", json={
             "connection_id": host["connection_id"],
             "user_id": host["user_id"],
-            "is_public": True,
+            "visibility": "public_read",
         })
         assert r.status_code == 200
         created.append(host["connection_id"])
@@ -405,8 +405,8 @@ def test_public_listing_is_capped_and_newest_first(client):
 def test_destroying_a_public_session_removes_it_from_the_lobby(client):
     host = _create_session(client)
     cid = host["connection_id"]
-    client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
+    client.post("/api/v2/session/visibility", json={
+        "connection_id": cid, "user_id": host["user_id"], "visibility": "public_read",
     })
     assert _public(client)
 
@@ -517,3 +517,106 @@ def test_curl_upload_rejects_oversized_body(client):
     oversized = b"x" * (app_module.MAX_CURL_UPLOAD_BYTES + 1)
     r = client.post(f"/u/{cid}", content=oversized)
     assert r.status_code == 413
+
+
+def _set_visibility(client, member, visibility):
+    r = client.post("/api/v2/session/visibility", json={
+        "connection_id": member["connection_id"],
+        "user_id": member["user_id"],
+        "visibility": visibility,
+    })
+    assert r.status_code == 200, r.text
+
+
+def _writes(client, member, block_id, file_block_id):
+    """Status of every content-writing call, made as ``member``."""
+    cid, uid = member["connection_id"], member["user_id"]
+    return {
+        "create": client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": uid, "type": "text", "content": "c"}).status_code,
+        "update": client.patch("/api/v2/block/update", json={
+            "connection_id": cid, "user_id": uid, "block_id": block_id, "content": "u"}).status_code,
+        "upload": client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid},
+                              files={"file": ("a.bin", b"x")}).status_code,
+        "replace": client.post("/api/v2/block/replace",
+                               data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                               files={"file": ("b.bin", b"y")}).status_code,
+        "raw_text": client.post("/api/v2/raw/text", json={
+            "connection_id": cid, "user_id": uid, "block_id": block_id, "content": "p"}).status_code,
+        "raw_file": client.post("/api/v2/raw/file",
+                                data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                                files={"file": ("c.bin", b"z")}).status_code,
+    }
+
+
+def test_read_only_rooms_let_only_the_host_write(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    block_id = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "t",
+    }).json()["data"]["block_id"]
+    file_block_id = client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": host["user_id"]},
+                                files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
+
+    _set_visibility(client, host, "public_read")
+    assert set(_writes(client, guest, block_id, file_block_id).values()) == {403}
+    r = client.request("DELETE", "/api/v2/block/delete", json={
+        "connection_id": cid, "user_id": guest["user_id"], "block_id": block_id})
+    assert r.status_code == 403
+    # Reading, and renaming yourself, are not writes to the room.
+    assert client.get(f"/api/v2/block/download/{cid}/{block_id}", headers=_auth(guest)).status_code == 200
+    assert _rename(client, guest, "Watcher") == "Watcher"
+    # Publishing read-only does not lock the host out.
+    assert set(_writes(client, host, block_id, file_block_id).values()) == {200}
+
+    for open_mode in ("public_edit", "private"):
+        _set_visibility(client, host, open_mode)
+        assert set(_writes(client, guest, block_id, file_block_id).values()) == {200}, open_mode
+
+    info = client.get(f"/api/v2/session/{cid}", headers=_auth(guest)).json()["data"]
+    assert info["visibility"] == "private"
+
+
+def test_visibility_changes_reach_members_and_only_listing_reaches_the_lobby(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[host["user_id"]]) as ws, \
+            client.websocket_connect("/ws/lobby") as lobby:
+        assert lobby.receive_json()["sessions"] == []
+
+        _set_visibility(client, host, "public_read")
+        assert ws.receive_json() == {"type": "visibility_changed", "visibility": "public_read"}
+        assert [e["connection_id"] for e in lobby.receive_json()["sessions"]] == [cid]
+
+        # Read-only to editable keeps the room listed, so the lobby hears
+        # nothing; the next lobby frame is the room going away.
+        _set_visibility(client, host, "public_edit")
+        assert ws.receive_json() == {"type": "visibility_changed", "visibility": "public_edit"}
+        _set_visibility(client, host, "private")
+        assert ws.receive_json() == {"type": "visibility_changed", "visibility": "private"}
+        assert lobby.receive_json()["sessions"] == []
+
+
+def test_snapshots_from_two_state_visibility_load_as_they_behaved():
+    import app as app_module
+
+    def restored(**extra):
+        snapshot = {
+            "connection_id": "legacy",
+            "users": {},
+            "last_activity": "2026-08-12T10:00:00",
+            **extra,
+        }
+        return app_module.Session.from_dict(snapshot).visibility
+
+    # A listed room used to let every member edit.
+    assert restored(is_public=True) == "public_edit"
+    assert restored(is_public=False) == "private"
+    assert restored() == "private"
+    assert restored(visibility="public_read") == "public_read"
+    assert restored(visibility="nonsense") == "private"

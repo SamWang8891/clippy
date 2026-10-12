@@ -210,6 +210,12 @@ class User(BaseModel):
 
 BlockType = Literal["text", "file"]
 
+# private:     unlisted; joining takes the ID.
+# public_read: listed in the lobby; only the host may change the content.
+# public_edit: listed, and every member may change it.
+Visibility = Literal["private", "public_read", "public_edit"]
+VISIBILITIES = ("private", "public_read", "public_edit")
+
 
 class Block(BaseModel):
     id: str
@@ -228,7 +234,7 @@ class SessionInfo(BaseModel):
     blocks: list[Block]
     allow_join: bool
     allow_curl_upload: bool
-    is_public: bool
+    visibility: Visibility
     host_id: str
 
 
@@ -297,10 +303,10 @@ class ToggleCurlRequest(BaseModel):
     allow_curl_upload: bool
 
 
-class TogglePublicRequest(BaseModel):
+class SetVisibilityRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
-    is_public: bool
+    visibility: Visibility
 
 
 class RawLink(BaseModel):
@@ -363,7 +369,7 @@ class Session:
         # Private until the host says otherwise: publishing a session publishes
         # its connection id, which is also the KDF input, so anyone reading the
         # lobby can read the content. That has to be a deliberate act.
-        self.is_public = False
+        self.visibility: Visibility = "private"
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.websockets: dict[str, set[WebSocket]] = {}
@@ -379,6 +385,16 @@ class Session:
     def is_host_token(self, token: str) -> bool:
         uid = self.tokens.get(token)
         return uid is not None and self.users[uid].is_host
+
+    @property
+    def is_public(self) -> bool:
+        """Listed in the lobby, whether or not visitors may edit."""
+        return self.visibility != "private"
+
+    def can_edit(self, user_id: str) -> bool:
+        """Whether a member may change the content. A read-only room still
+        lets its host write — publishing to read is not locking yourself out."""
+        return self.visibility != "public_read" or self.users[user_id].is_host
 
     def committed_bytes(self) -> int:
         return self.total_bytes + self.reserved_bytes
@@ -468,7 +484,7 @@ class Session:
         """
         for user in self.users.values():
             user.is_host = (user.id == new_host_id)
-        self.is_public = False
+        self.visibility = "private"
         self.update_activity()
 
     def add_block(self, block: Block, byte_size: int = 0):
@@ -523,7 +539,7 @@ class Session:
             "block_bytes": self.block_bytes,
             "allow_join": self.allow_join,
             "allow_curl_upload": self.allow_curl_upload,
-            "is_public": self.is_public,
+            "visibility": self.visibility,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
         }
@@ -546,7 +562,10 @@ class Session:
         instance.reserved_bytes = 0
         instance.allow_join = data.get("allow_join", True)
         instance.allow_curl_upload = data.get("allow_curl_upload", False)
-        instance.is_public = data.get("is_public", False)
+        # Snapshots from before visibility had three states stored is_public;
+        # those rooms let every member edit, so that is what they come back as.
+        visibility = data.get("visibility") or ("public_edit" if data.get("is_public") else "private")
+        instance.visibility = visibility if visibility in VISIBILITIES else "private"
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
         # Snapshots written before created_at existed fall back to the last
         # activity rather than "now", which would reshuffle the lobby on restart.
@@ -819,6 +838,17 @@ def bearer_token(request: Request) -> str:
 def new_member() -> tuple[str, str]:
     """Return (secret token, public user id) for a new member."""
     return secrets.token_urlsafe(32), uuid.uuid4().hex[:12]
+
+
+def edit_denied(session: "Session", token: str) -> JSONResponse | None:
+    """The refusal for a caller who may not change this session's content,
+    or None when they may. Every content-writing endpoint asks this first."""
+    uid = session.member_id(token)
+    if uid is None:
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    if not session.can_edit(uid):
+        return api_response(HTTPStatus.FORBIDDEN, "This connection is read-only")
+    return None
 
 
 def client_address(request: Request) -> str:
@@ -1242,7 +1272,7 @@ async def get_session(connection_id: str, request: Request):
         blocks=list(session.blocks.values()),
         allow_join=session.allow_join,
         allow_curl_upload=session.allow_curl_upload,
-        is_public=session.is_public,
+        visibility=session.visibility,
         host_id=next((u.id for u in session.users.values() if u.is_host), ""),
     )
 
@@ -1369,7 +1399,7 @@ async def transfer_host(request: TransferHostRequest):
     })
 
     if was_public:
-        await session.broadcast({"type": "public_changed", "is_public": False})
+        await session.broadcast({"type": "visibility_changed", "visibility": "private"})
         await broadcast_public_sessions()
 
     return api_response(
@@ -1451,16 +1481,17 @@ async def toggle_curl(request: ToggleCurlRequest):
 
 
 @router.post(
-    "/session/toggle_public",
-    summary="Toggle Public Listing",
-    description="Publish or unpublish the session on the entry page (host only)"
+    "/session/visibility",
+    summary="Set Visibility",
+    description="Keep the session private, or list it read-only or editable (host only)"
 )
-async def toggle_public(request: TogglePublicRequest):
+async def set_visibility(request: SetVisibilityRequest):
     """
-    Publish the session in the public lobby, or take it back down.
+    Choose who can find the session and who can change it.
 
-    Host only, and off by default: the lobby hands out the connection id, and
-    the connection id is what derives the content key.
+    Host only, and private by default: the lobby hands out the connection id,
+    and the connection id is what derives the content key. In ``public_read``
+    only the host may change the content; everyone else can read and copy.
     """
     connection_id = request.connection_id.lower()
 
@@ -1472,21 +1503,24 @@ async def toggle_public(request: TogglePublicRequest):
     if not session.is_host_token(request.user_id):
         return api_response(HTTPStatus.FORBIDDEN, "Only host can change visibility")
 
-    if session.is_public == request.is_public:
+    if session.visibility == request.visibility:
         # Nothing changed, so nothing to fan out. Without this, repeating the
         # call is a free lobby-broadcast amplifier: the frames queue up in
         # memory against any listener that has stopped reading.
         return api_response(HTTPStatus.OK, "Visibility unchanged", {"success": True})
 
-    session.is_public = request.is_public
+    was_public = session.is_public
+    session.visibility = request.visibility
     session.update_activity()
 
     await session.broadcast({
-        "type": "public_changed",
-        "is_public": session.is_public,
+        "type": "visibility_changed",
+        "visibility": session.visibility,
     })
-    # Appearing and disappearing is the one thing the lobby must show at once.
-    await broadcast_public_sessions()
+    # Appearing and disappearing is the one thing the lobby must show at once;
+    # read-only versus editable is not part of a lobby entry.
+    if session.is_public != was_public:
+        await broadcast_public_sessions()
 
     return api_response(HTTPStatus.OK, "Visibility updated", {"success": True})
 
@@ -1525,9 +1559,10 @@ async def create_text_block(request: CreateBlockRequest):
 
     session = sessions[connection_id]
 
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
     uid = session.member_id(request.user_id)
-    if uid is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     content_bytes = len(request.content.encode("utf-8")) if request.content else 0
     quota_error = session.quota_check(content_bytes)
@@ -1588,9 +1623,10 @@ async def upload_file_block(
 
     session = sessions[connection_id]
 
+    denied = edit_denied(session, user_id)
+    if denied is not None:
+        return denied
     uid = session.member_id(user_id)
-    if uid is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     quota_error = session.quota_check(0)
     if quota_error is not None:
@@ -1684,8 +1720,9 @@ async def update_text_block(request: UpdateTextBlockRequest):
 
     session = sessions[connection_id]
 
-    if session.member_id(request.user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
 
     block = session.blocks.get(request.block_id)
     if block is None:
@@ -1753,8 +1790,9 @@ async def replace_file_block(
 
     session = sessions[connection_id]
 
-    if session.member_id(user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    denied = edit_denied(session, user_id)
+    if denied is not None:
+        return denied
 
     block = session.blocks.get(block_id)
     if block is None:
@@ -1855,11 +1893,9 @@ async def delete_block(request: DeleteBlockRequest):
 
     session = sessions[connection_id]
 
-    if session.member_id(request.user_id) is None:
-        return api_response(
-            HTTPStatus.FORBIDDEN,
-            "User not in session"
-        )
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
 
     if request.block_id not in session.blocks:
         return api_response(
@@ -1951,8 +1987,11 @@ async def create_raw_text_link(request: CreateRawTextRequest):
         return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
-    if session.member_id(request.user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    # Writers only: each link is a copy counted against the session's storage
+    # and link caps, which a read-only visitor must not be able to spend.
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
     if request.block_id not in session.blocks:
         return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
@@ -2014,8 +2053,9 @@ async def create_raw_file_link(
         return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
-    if session.member_id(user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    denied = edit_denied(session, user_id)  # writers only, as for text links
+    if denied is not None:
+        return denied
     if block_id not in session.blocks:
         return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
@@ -2281,10 +2321,10 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
         else:
             # Nobody is left to hold the seat, so nobody could ever unpublish or
             # destroy it again. An unlisted room just waits out SESSION_TIMEOUT.
-            session.is_public = False
+            session.visibility = "private"
 
         if was_public:
-            await session.broadcast({"type": "public_changed", "is_public": False})
+            await session.broadcast({"type": "visibility_changed", "visibility": "private"})
             await broadcast_public_sessions()
 
 
