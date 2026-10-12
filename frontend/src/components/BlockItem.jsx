@@ -7,6 +7,7 @@ import {decrypt, decryptToBytes} from '../utils/encryption';
 import {fetchBlockCiphertext, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock, parseBlockContent} from '../utils/codeBlock';
 import {LinedTextarea} from './LinedTextarea';
+import {Select} from './Select';
 import {IconButton} from './IconButton';
 import {Copy} from './animate-ui/icons/copy';
 import {Download} from './animate-ui/icons/download';
@@ -358,15 +359,13 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                                 </button>
                             ))}
                             {editMode === 'code' && (
-                                <select
+                                <Select
                                     className="block-edit-lang"
                                     value={editLanguage}
-                                    onChange={(e) => setEditLanguage(e.target.value)}
-                                >
-                                    {SUPPORTED_LANGUAGES.map((l) => (
-                                        <option key={l.id} value={l.id}>{l.label}</option>
-                                    ))}
-                                </select>
+                                    options={SUPPORTED_LANGUAGES}
+                                    onChange={setEditLanguage}
+                                    label="Language"
+                                />
                             )}
                         </div>
                         <LinedTextarea

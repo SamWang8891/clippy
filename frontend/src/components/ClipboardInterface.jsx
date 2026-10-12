@@ -18,6 +18,7 @@ import {viewTransition} from '../utils/motion';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
 import {LinedTextarea} from './LinedTextarea';
+import {Select} from './Select';
 import {IconButton, useIntro} from './IconButton';
 import {Layers} from './animate-ui/icons/layers';
 import {Plus} from './animate-ui/icons/plus';
@@ -651,13 +652,12 @@ function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLan
                     {isCode && (
                         <>
                             <span className="compose-dot">·</span>
-                            <label className="compose-lang">
-                                <select value={language} onChange={(e) => setLanguage(e.target.value)}>
-                                    {SUPPORTED_LANGUAGES.map((l) => (
-                                        <option key={l.id} value={l.id}>{l.label}</option>
-                                    ))}
-                                </select>
-                            </label>
+                            <Select
+                                value={language}
+                                options={SUPPORTED_LANGUAGES}
+                                onChange={setLanguage}
+                                label="Language"
+                            />
                         </>
                     )}
                 </div>
