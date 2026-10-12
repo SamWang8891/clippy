@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {motion} from 'motion/react';
 import QRCode from 'qrcode';
 import {useToast} from '../context/ToastContext';
@@ -28,6 +28,8 @@ const IconQr = ({size, ...props}) => (
 
 // The ID is the room's key, so it sits blurred until someone looks: hovering
 // shows it, and a press shows it for this long before it clouds over again.
+// The press also rings the chip in solid colour, which runs back round its
+// edge over the same time; the lap closing is the moment it blurs.
 const REVEAL_MS = 20000;
 
 // [what everyone is told, what the host is told]
@@ -47,16 +49,42 @@ export function Id({sessionData, isPublic = false, allowEdit = false, canChange 
     const qrButtonRef = useRef(null);
     const popupRef = useRef(null);
     const toast = useToast();
-    const [revealed, setRevealed] = useState(false);
+    const codeRef = useRef(null);
+    // Presses so far, 0 while hidden. It keys the ring, so pressing again
+    // starts the lap — and the twenty seconds — over.
+    const [presses, setPresses] = useState(0);
     const revealTimerRef = useRef(null);
+    const revealed = presses > 0;
 
-    // Pressing again starts the twenty seconds over.
-    const reveal = () => {
-        setRevealed(true);
+    const hide = useCallback(() => {
         clearTimeout(revealTimerRef.current);
-        revealTimerRef.current = setTimeout(() => setRevealed(false), REVEAL_MS);
+        setPresses(0);
+    }, []);
+
+    const reveal = () => {
+        setPresses((n) => n + 1);
+        clearTimeout(revealTimerRef.current);
+        revealTimerRef.current = setTimeout(hide, REVEAL_MS);
     };
     useEffect(() => () => clearTimeout(revealTimerRef.current), []);
+
+    // Off the screen, or behind another tab, nobody is looking at it: it
+    // clouds over then and there rather than running out the clock.
+    useEffect(() => {
+        if (!revealed) return undefined;
+        const observer = new window.IntersectionObserver(([entry]) => {
+            if (!entry.isIntersecting) hide();
+        });
+        observer.observe(codeRef.current);
+        const onVisibility = () => {
+            if (document.hidden) hide();
+        };
+        document.addEventListener('visibilitychange', onVisibility);
+        return () => {
+            observer.disconnect();
+            document.removeEventListener('visibilitychange', onVisibility);
+        };
+    }, [revealed, hide]);
 
     const currentUrl = typeof window !== 'undefined' ? window.location.href : '';
 
@@ -105,8 +133,19 @@ export function Id({sessionData, isPublic = false, allowEdit = false, canChange 
 
     return (
         <div className="id">
-            <button type="button" className={`id-code ${revealed ? 'is-revealed' : ''}`} onClick={reveal}>
+            <button
+                ref={codeRef}
+                type="button"
+                className={`id-code ${revealed ? 'is-revealed' : ''}`}
+                onClick={reveal}
+                style={{'--reveal': `${REVEAL_MS}ms`}}
+            >
                 <span className="id-code-text">{sessionData?.connection_id}</span>
+                {revealed && (
+                    <svg key={presses} className="id-code-ring" aria-hidden="true">
+                        <rect pathLength="100" />
+                    </svg>
+                )}
             </button>
             <IconButton
                 icon={Copy}

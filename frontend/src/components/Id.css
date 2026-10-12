@@ -17,6 +17,36 @@
     border-radius: 4px;
     background: var(--bg-elev);
     cursor: pointer;
+    position: relative;
+}
+
+/* Laid over the chip's border: solid when pressed, running back round the
+   edge over --reveal until only the gray border is left. */
+.id-code-ring {
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    width: calc(100% + 2px);
+    height: calc(100% + 2px);
+    overflow: visible;
+    pointer-events: none;
+}
+
+.id-code-ring rect {
+    x: 1px;
+    y: 1px;
+    width: calc(100% - 2px);
+    height: calc(100% - 2px);
+    rx: 3px;
+    fill: none;
+    stroke: var(--fg);
+    stroke-width: 2px;
+    stroke-dasharray: 100;
+    animation: id-ring var(--reveal) linear forwards;
+}
+
+@keyframes id-ring {
+    to { stroke-dashoffset: 100; }
 }
 
 /* Only the characters cloud over; the chip around them stays sharp. They
