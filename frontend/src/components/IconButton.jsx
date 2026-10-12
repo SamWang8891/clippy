@@ -3,6 +3,10 @@ import {motion} from 'motion/react';
 import {AnimateIcon} from './animate-ui/icons/icon';
 
 const PRESS = {scale: 0.9};
+// A labelled button is often a wide one, and shrinking its whole box pulled
+// the edges out from under the pointer: pressed near one, it never got the
+// click. Its face gives way instead, and the box keeps its place.
+const FACE = {pressed: {scale: 0.96}};
 
 // A touch screen fires a synthetic hover after every tap and never the leave
 // that ends it, so hover animations would freeze mid-pose there. Tap only.
@@ -26,6 +30,8 @@ export function IconButton({
     ...props
 }) {
     const icon = <Icon size={size} aria-hidden="true" />;
+    const content = iconEnd ? <>{children}{icon}</> : <>{icon}{children}</>;
+    const labelled = children != null;
     return (
         <AnimateIcon
             asChild
@@ -34,8 +40,12 @@ export function IconButton({
             animateOnTap={animation}
             completeOnStop
         >
-            <motion.button type="button" whileTap={props.disabled ? undefined : PRESS} {...props}>
-                {iconEnd ? <>{children}{icon}</> : <>{icon}{children}</>}
+            <motion.button
+                type="button"
+                whileTap={props.disabled ? undefined : labelled ? 'pressed' : PRESS}
+                {...props}
+            >
+                {labelled ? <motion.span className="icon-button-face" variants={FACE}>{content}</motion.span> : content}
             </motion.button>
         </AnimateIcon>
     );

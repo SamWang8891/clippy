@@ -325,3 +325,12 @@ select:focus-visible,
 
 .hljs-strong { font-weight: 600; }
 .hljs-emphasis { font-style: italic; }
+
+/* Lays out a labelled IconButton's icon and text the way the button itself
+   would; see FACE in IconButton. */
+.icon-button-face {
+    display: inherit;
+    align-items: inherit;
+    justify-content: inherit;
+    gap: inherit;
+}
