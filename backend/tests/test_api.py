@@ -656,6 +656,67 @@ def test_read_only_rooms_let_only_the_host_write(client, monkeypatch):
     assert info["visibility"] == "private"
 
 
+def test_writes_that_lose_permission_mid_write_leave_nothing_behind(client, monkeypatch):
+    """Permission was checked only before the bytes went to disk, so a room
+    turned read-only during a slow upload still took the block."""
+    import aiofiles
+
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    block_id = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "t",
+    }).json()["data"]["block_id"]
+    file_block_id = client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": host["user_id"]},
+                                files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
+    assert client.post("/api/v2/session/toggle_curl", json={
+        "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": True,
+    }).status_code == 200
+    session = app_module.sessions[cid]
+
+    def state():
+        raw_dir = app_module.RAW_DIR / cid
+        return (list(session.blocks), dict(session.block_bytes), session.total_bytes,
+                sorted(p.name for p in session.session_dir.iterdir()),
+                sorted(p.name for p in raw_dir.iterdir()) if raw_dir.exists() else [],
+                dict(app_module.raw_links.get(cid, {})))
+
+    before = state()
+
+    # The host locks the room the moment a write starts.
+    real_open = aiofiles.open
+
+    def open_then_lock(*args, **kwargs):
+        session.visibility = "public_read"
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(aiofiles, "open", open_then_lock)
+    uid = guest["user_id"]
+    writes = {
+        "create": lambda: client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": uid, "type": "text", "content": "c"}),
+        "upload": lambda: client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid},
+                                      files={"file": ("a.bin", b"x")}),
+        "replace": lambda: client.post("/api/v2/block/replace",
+                                       data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                                       files={"file": ("b.bin", b"y")}),
+        "raw_text": lambda: client.post("/api/v2/raw/text", json={
+            "connection_id": cid, "user_id": uid, "block_id": block_id, "content": "p"}),
+        "raw_file": lambda: client.post("/api/v2/raw/file",
+                                        data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                                        files={"file": ("c.bin", b"z")}),
+        "curl_text": lambda: client.post(f"/u/{cid}", content=b"late"),
+        "curl_file": lambda: client.post(f"/u/{cid}", files={"f": ("late.txt", b"late")}),
+    }
+    for name, write in writes.items():
+        session.visibility = "private"
+        assert write().status_code == 403, name
+    assert state() == before
+
+
 def test_visibility_changes_reach_members_and_only_listing_reaches_the_lobby(client):
     host = _create_session(client)
     cid = host["connection_id"]

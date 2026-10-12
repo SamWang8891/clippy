@@ -1631,10 +1631,17 @@ async def create_text_block(request: CreateBlockRequest):
         created_at=datetime.now().isoformat(),
     )
 
+    text_file = session.session_dir / f"text_block_{block_id}.txt"
     if request.type == "text" and request.content:
-        text_file = session.session_dir / f"text_block_{block_id}.txt"
         async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
             await f.write(request.content)
+
+    # Asked again after every wait: the room may have turned read-only, or
+    # the member been removed, while the bytes were going to disk.
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        text_file.unlink(missing_ok=True)
+        return denied
 
     session.add_block(block, byte_size=content_bytes)
 
@@ -1727,6 +1734,11 @@ async def upload_file_block(
             else "Session storage quota exceeded"
         )
         return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
+
+    denied = edit_denied(session, user_id)  # the stream can outlast permission
+    if denied is not None:
+        file_path.unlink(missing_ok=True)
+        return denied
 
     block = Block(
         id=block_id,
@@ -1896,6 +1908,11 @@ async def replace_file_block(
             else "Session storage quota exceeded"
         )
         return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
+
+    denied = edit_denied(session, user_id)  # the stream can outlast permission
+    if denied is not None:
+        tmp_path.unlink(missing_ok=True)
+        return denied
 
     if old_filename and old_filename != safe_filename:
         (session.session_dir / old_filename).unlink(missing_ok=True)
@@ -2100,6 +2117,11 @@ async def create_raw_text_link(request: CreateRawTextRequest):
     async with aiofiles.open(raw_dir / filename, "w", encoding="utf-8") as f:
         await f.write(request.content)
 
+    denied = edit_denied(session, request.user_id)  # permission can lapse mid-write
+    if denied is not None:
+        (raw_dir / filename).unlink(missing_ok=True)
+        return denied
+
     now = datetime.now()
     link = RawLink(
         code=code,
@@ -2196,6 +2218,11 @@ async def create_raw_file_link(
             else "Session storage quota exceeded"
         )
         return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
+
+    denied = edit_denied(session, user_id)  # the stream can outlast permission
+    if denied is not None:
+        file_path.unlink(missing_ok=True)
+        return denied
 
     now = datetime.now()
     link = RawLink(
