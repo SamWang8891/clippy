@@ -3,6 +3,7 @@ import {enterSession, getConnectionIdRules, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
+import {idFromLink} from '../utils/idFromLink';
 import {PublicSessions} from './PublicSessions';
 import {IconButton} from './IconButton';
 import {ArrowRight} from './animate-ui/icons/arrow-right';
@@ -52,6 +53,14 @@ export function storeName(name) {
  */
 function ConnectionIdField({inputId, inputRef, value, sanitize, onChange, placeholder, disabled}) {
     const apply = (e) => onChange(sanitize(e.target.value));
+    // A share link pasted whole gives up its ID, in place of whatever the
+    // field held; the characters of "https" would otherwise fill it.
+    const pasteLink = (e) => {
+        const id = idFromLink(e.clipboardData.getData('text'));
+        if (id === null) return;
+        e.preventDefault();
+        onChange(sanitize(id, true));
+    };
     return (
         <div className="entry-field">
             <label htmlFor={inputId}>Connection ID</label>
@@ -64,6 +73,7 @@ function ConnectionIdField({inputId, inputRef, value, sanitize, onChange, placeh
                     value={value}
                     onChange={apply}
                     onCompositionEnd={apply}
+                    onPaste={pasteLink}
                     placeholder={placeholder}
                     disabled={disabled}
                     lang="en"
@@ -167,13 +177,12 @@ export function SessionEntry() {
     // meantime, saying so beats creating an empty one under its name.
     const joinById = (id) => connect(() => joinSession(id, userName || null));
 
-    // Only what the server will accept survives being typed or pasted.
-    const sanitizeId = (value) => value
-        .toLowerCase()
-        .split('')
-        .filter((c) => idRules.alphabet.includes(c))
-        .join('')
-        .slice(0, idRules.length);
+    // Only what the server will accept survives being typed or pasted; from a
+    // link, the last characters are the ones kept.
+    const sanitizeId = (value, fromEnd = false) => {
+        const kept = value.toLowerCase().split('').filter((c) => idRules.alphabet.includes(c)).join('');
+        return fromEnd ? kept.slice(-idRules.length) : kept.slice(0, idRules.length);
+    };
 
     const placeholder = '_'.repeat(idRules.length);
     const idIncomplete = sessionId.length > 0 && sessionId.length !== idRules.length;
