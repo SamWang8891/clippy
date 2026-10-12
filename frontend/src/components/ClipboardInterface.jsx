@@ -329,6 +329,24 @@ export function ClipboardInterface() {
         };
     }, [isCreating, confirm]);
 
+    // N opens a new item from anywhere the key is not already text: not in a
+    // field or the language picker, not mid-composition, not under a dialog.
+    // With the composer open it just puts focus back in it. preventDefault, or
+    // the n would land in the editor it has just opened.
+    useEffect(() => {
+        const onKeyDown = (e) => {
+            if (e.key?.toLowerCase() !== 'n' || e.ctrlKey || e.metaKey || e.altKey || e.repeat || e.isComposing) return;
+            if (!canEdit) return;
+            if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="combobox"]')) return;
+            if (document.querySelector('.confirm-dialog, .menu-panel, .qr-popup')) return;
+            e.preventDefault();
+            if (isCreating) composeRef.current?.querySelector('textarea, input[type="file"]')?.focus();
+            else setIsCreating(true);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [canEdit, isCreating]);
+
     const handleCreateTextBlock = async (content) => {
         try {
             await createTextBlock(sessionData.connection_id, sessionData.user_id, content);
@@ -705,6 +723,8 @@ export function ClipboardInterface() {
                         size={20}
                         className="compose-open"
                         onClick={() => setIsCreating(true)}
+                        title="New item (N)"
+                        aria-keyshortcuts="N"
                     >
                         New item
                     </IconButton>
