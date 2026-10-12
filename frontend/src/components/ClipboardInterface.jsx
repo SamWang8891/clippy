@@ -9,7 +9,7 @@ import {
     getSession,
     renameSelf,
     replaceFileBlock,
-    toggleSessionPublic,
+    setSessionVisibility,
     updateTextBlock,
     uploadFileBlock,
 } from '../utils/api';
@@ -29,6 +29,13 @@ import {Notification} from './Notification';
 import {storeName} from './SessionEntry';
 import './ClipboardInterface.css';
 
+const NEXT_VISIBILITY = {private: 'public_read', public_read: 'public_edit', public_edit: 'private'};
+const VISIBILITY_TOASTS = {
+    private: 'Private again',
+    public_read: 'Listed on the home page, read-only',
+    public_edit: 'Listed on the home page, editable',
+};
+
 
 export function ClipboardInterface() {
     const {sessionData, clearSession} = useSession();
@@ -47,6 +54,11 @@ export function ClipboardInterface() {
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [pendingUploads, setPendingUploads] = useState(0);
     const brandIntro = useIntro(900);
+
+    const currentUser = users.find((u) => u.id === myPublicId);
+    // Off until the session has loaded, so a read-only room never flashes its
+    // composer at a visitor. The server refuses the writes either way.
+    const canEdit = Boolean(session) && (session.visibility !== 'public_read' || Boolean(currentUser?.is_host));
 
     useEffect(() => {
         if (!sessionData?.connection_id) return;
@@ -176,8 +188,8 @@ export function ClipboardInterface() {
                 setSession((prev) => ({...prev, allow_curl_upload: message.allow_curl_upload}));
                 break;
 
-            case 'public_changed':
-                setSession((prev) => ({...prev, is_public: message.is_public}));
+            case 'visibility_changed':
+                setSession((prev) => ({...prev, visibility: message.visibility}));
                 break;
 
             case 'session_destroyed':
@@ -280,14 +292,18 @@ export function ClipboardInterface() {
         // instead of toggling — otherwise the overlay strobes as the cursor moves.
         let depth = 0;
 
+        // A read-only member still has the drop swallowed — the browser would
+        // otherwise open the file in place of the session — but is offered no
+        // overlay and given a "not allowed" cursor.
         const onDragEnter = (e) => {
-            if (!carriesFiles(e)) return;
+            if (!carriesFiles(e) || !canEdit) return;
             depth += 1;
             setIsDraggingFiles(true);
         };
         const onDragOver = (e) => {
             if (!carriesFiles(e)) return;
             e.preventDefault();
+            if (!canEdit) e.dataTransfer.dropEffect = 'none';
         };
         const onDragLeave = (e) => {
             if (!carriesFiles(e)) return;
@@ -306,7 +322,7 @@ export function ClipboardInterface() {
             // twice.
             if (e.defaultPrevented) return;
             e.preventDefault();
-            uploadDroppedFiles(e.dataTransfer.files);
+            if (canEdit) uploadDroppedFiles(e.dataTransfer.files);
         };
 
         window.addEventListener('dragenter', onDragEnter);
@@ -319,14 +335,14 @@ export function ClipboardInterface() {
             window.removeEventListener('dragleave', onDragLeave);
             window.removeEventListener('drop', onDrop);
         };
-    }, [uploadDroppedFiles]);
+    }, [uploadDroppedFiles, canEdit]);
 
     // Ctrl+V lands the same place a drop does. Also window-bound: a screenshot
     // pasted with nothing focused has no other handler to reach.
     useEffect(() => {
         const onPaste = (e) => {
             const files = Array.from(e.clipboardData?.files || []);
-            if (files.length === 0) return;
+            if (files.length === 0 || !canEdit) return;
             // Word and Excel put a bitmap on the clipboard next to the text.
             // With the caret in a field, the text is what was meant.
             const editable = e.target?.closest?.('input, textarea, [contenteditable]');
@@ -337,7 +353,7 @@ export function ClipboardInterface() {
 
         window.addEventListener('paste', onPaste);
         return () => window.removeEventListener('paste', onPaste);
-    }, [uploadDroppedFiles]);
+    }, [uploadDroppedFiles, canEdit]);
 
     // Shown at once and corrected by the reply, which may carry a suffix if
     // someone else already holds the name. Remembered for the entry form too,
@@ -375,11 +391,12 @@ export function ClipboardInterface() {
         }
     };
 
-    const handleToggleVisibility = async () => {
-        const next = !session?.is_public;
+    // Each press opens the room one step further, then closes it again.
+    const handleCycleVisibility = async () => {
+        const next = NEXT_VISIBILITY[session?.visibility ?? 'private'];
         try {
-            await toggleSessionPublic(sessionData.connection_id, sessionData.user_id, next);
-            toast.success(next ? 'Listed on the home page' : 'Private again');
+            await setSessionVisibility(sessionData.connection_id, sessionData.user_id, next);
+            toast.success(VISIBILITY_TOASTS[next]);
         } catch (err) {
             toast.error('Failed to change visibility: ' + err.message);
         }
@@ -399,8 +416,6 @@ export function ClipboardInterface() {
         // silently rejoined the connection the user had just left.
         if (confirmed) goHome();
     };
-
-    const currentUser = users.find((u) => u.id === myPublicId);
 
     const countLabel = blocks.length === 0
         ? 'No items yet.'
@@ -440,14 +455,15 @@ export function ClipboardInterface() {
                         <div className="desk-user">
                             <NameEditor name={currentUser.name} onRename={handleRename} />
                             {currentUser.is_host && <span className="desk-host-tag">HOST</span>}
+                            {session && !canEdit && <span className="desk-host-tag">READ-ONLY</span>}
                         </div>
                     )}
                     <div className="desk-id">
                         <Id
                             sessionData={sessionData}
-                            isPublic={session?.is_public ?? false}
-                            canToggleVisibility={currentUser?.is_host ?? false}
-                            onToggleVisibility={handleToggleVisibility}
+                            visibility={session?.visibility ?? 'private'}
+                            canChangeVisibility={currentUser?.is_host ?? false}
+                            onChangeVisibility={handleCycleVisibility}
                         />
                     </div>
                 </div>
@@ -473,6 +489,7 @@ export function ClipboardInterface() {
                             block={block}
                             sessionId={sessionData.connection_id}
                             userId={sessionData.user_id}
+                            canEdit={canEdit}
                             onDelete={handleDeleteBlock}
                             onUpdateText={handleUpdateText}
                             onReplaceFile={handleReplaceFile}
@@ -480,7 +497,7 @@ export function ClipboardInterface() {
                     ))}
                 </div>
 
-                {isCreating ? (
+                {!canEdit ? null : isCreating ? (
                     <div className="compose">
                         <div className="compose-tabs" role="tablist">
                             {[

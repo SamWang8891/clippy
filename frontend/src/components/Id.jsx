@@ -1,8 +1,10 @@
 import React, {useEffect, useRef, useState} from 'react';
+import {motion} from 'motion/react';
 import QRCode from 'qrcode';
 import {useToast} from '../context/ToastContext';
 import {IconButton} from './IconButton';
 import {Copy} from './animate-ui/icons/copy';
+import {Lock} from './animate-ui/icons/lock';
 import {X} from './animate-ui/icons/x';
 import './Id.css';
 
@@ -23,27 +25,13 @@ const IconQr = ({size, ...props}) => (
     </svg>
 );
 
-// Body plus shackle: closed sits square on the box, open swings clear of it.
-const IconLock = ({open}) => (
-    <svg
-        viewBox="0 0 16 16"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-    >
-        <rect x="3.25" y="7" width="9.5" height="6.25" rx="1.5" />
-        {open
-            ? <path d="M5.75 7V4.9a2.4 2.4 0 0 1 4.75-.5" />
-            : <path d="M5.75 7V4.9a2.4 2.4 0 0 1 4.8 0V7" />}
-    </svg>
-);
+const VISIBILITY_TITLES = {
+    private: ['Private', 'Private — click to list on the home page, read-only'],
+    public_read: ['Listed on the home page, read-only', 'Listed on the home page, read-only — click to let everyone edit'],
+    public_edit: ['Listed on the home page, editable', 'Listed on the home page, editable — click to make private'],
+};
 
-export function Id({sessionData, isPublic = false, canToggleVisibility = false, onToggleVisibility}) {
+export function Id({sessionData, visibility = 'private', canChangeVisibility = false, onChangeVisibility}) {
     const [showQrPopup, setShowQrPopup] = useState(false);
     const [qrDataUrl, setQrDataUrl] = useState('');
     const [qrError, setQrError] = useState(false);
@@ -116,21 +104,20 @@ export function Id({sessionData, isPublic = false, canToggleVisibility = false, 
                 aria-label="Show QR code"
                 title="Show QR code"
             />
-            <button
+            {/* Three steps, louder each time: private, listed read-only (an
+                outline), listed editable (filled). The shackle springs open as
+                the room is listed and shuts again when it goes private. */}
+            <motion.button
                 type="button"
-                className={`id-btn ${isPublic ? 'is-public' : ''}`}
-                onClick={onToggleVisibility}
-                disabled={!canToggleVisibility}
-                aria-pressed={isPublic}
-                aria-label={isPublic ? 'Listed publicly — make private' : 'Private — list publicly'}
-                title={
-                    canToggleVisibility
-                        ? (isPublic ? 'Listed on the home page — click to hide' : 'Private — click to list on the home page')
-                        : (isPublic ? 'Listed on the home page' : 'Private')
-                }
+                className={`id-btn id-lock is-${visibility}`}
+                onClick={onChangeVisibility}
+                disabled={!canChangeVisibility}
+                whileTap={canChangeVisibility ? {scale: 0.9} : undefined}
+                aria-label={VISIBILITY_TITLES[visibility][canChangeVisibility ? 1 : 0]}
+                title={VISIBILITY_TITLES[visibility][canChangeVisibility ? 1 : 0]}
             >
-                <IconLock open={isPublic} />
-            </button>
+                <Lock size={14} animate={visibility === 'private' ? false : 'unlock'} aria-hidden="true" />
+            </motion.button>
 
             {showQrPopup && (
                 <div ref={popupRef} className="qr-popup" role="dialog" aria-label="Share QR code">

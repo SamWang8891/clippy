@@ -99,7 +99,10 @@ function formatTime(iso) {
         d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 
-export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateText, onReplaceFile}) {
+// canEdit off means a read-only room: copying and downloading stay, and every
+// control that writes is gone — raw links included, since each one is a copy
+// counted against the session's storage.
+export function BlockItem({block, index, sessionId, userId, canEdit = true, onDelete, onUpdateText, onReplaceFile}) {
     const [decryptedContent, setDecryptedContent] = useState('');
     const [isDecrypting, setIsDecrypting] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -435,15 +438,17 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                                 aria-label="Copy"
                                 title="Copy"
                             />
-                            <IconButton
-                                icon={Link}
-                                onClick={handleGetRawLink}
-                                className="block-action"
-                                disabled={isGeneratingRaw}
-                                aria-label="Raw link"
-                                title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
-                            />
-                            {onUpdateText && (
+                            {canEdit && (
+                                <IconButton
+                                    icon={Link}
+                                    onClick={handleGetRawLink}
+                                    className="block-action"
+                                    disabled={isGeneratingRaw}
+                                    aria-label="Raw link"
+                                    title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
+                                />
+                            )}
+                            {canEdit && onUpdateText && (
                                 <IconButton
                                     icon={Pen}
                                     onClick={handleStartEdit}
@@ -463,15 +468,17 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                                 aria-label="Download"
                                 title="Download"
                             />
-                            <IconButton
-                                icon={Link}
-                                onClick={handleGetRawLink}
-                                className="block-action"
-                                disabled={isGeneratingRaw}
-                                aria-label="Raw link"
-                                title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
-                            />
-                            {onReplaceFile && (
+                            {canEdit && (
+                                <IconButton
+                                    icon={Link}
+                                    onClick={handleGetRawLink}
+                                    className="block-action"
+                                    disabled={isGeneratingRaw}
+                                    aria-label="Raw link"
+                                    title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
+                                />
+                            )}
+                            {canEdit && onReplaceFile && (
                                 <>
                                     <IconButton
                                         icon={RefreshCcw}
@@ -492,13 +499,15 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                             )}
                         </>
                     )}
-                    <IconButton
-                        icon={Trash2}
-                        onClick={() => onDelete(block.id)}
-                        className="block-action is-danger"
-                        aria-label="Delete"
-                        title="Delete"
-                    />
+                    {canEdit && (
+                        <IconButton
+                            icon={Trash2}
+                            onClick={() => onDelete(block.id)}
+                            className="block-action is-danger"
+                            aria-label="Delete"
+                            title="Delete"
+                        />
+                    )}
                 </div>
             )}
         </article>
