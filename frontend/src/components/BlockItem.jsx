@@ -105,6 +105,40 @@ const CAN_HOVER = typeof window !== 'undefined' && Boolean(window.matchMedia?.('
 const SLIDE = {duration: 0.16, ease: [0.2, 0, 0, 1]};
 const SETTLE = {bounceStiffness: 900, bounceDamping: 60};
 
+// Digits turn like an odometer's: each column is a strip of 0 to 9 that slides
+// to the digit it shows — up as the number grows, down as it shrinks. A strip
+// that only moves keeps rolling through a reorder; a digit swapped for another
+// lost its exit whenever the block's node was moved, so it blinked instead.
+// ponytail: 9 to 0 spins back through the strip rather than wrapping on.
+const ROLL = {duration: 0.26, ease: [0.2, 0, 0, 1]};
+const REEL = [...'0123456789'];
+
+/**
+ * The block's place in the list, in the card's top-left corner. Hidden from
+ * assistive tech: the list's own order already says it.
+ */
+function BlockMark({n}) {
+    const digits = String(n).padStart(2, '0');
+    return (
+        <span className="block-mark" aria-hidden="true">
+            {[...digits].map((digit, i) => (
+                // Keyed by place from the right, so 99 to 100 keeps the ones
+                // and tens turning in their own columns.
+                <span key={digits.length - i} className="block-mark-digit">
+                    <motion.span
+                        className="block-mark-reel"
+                        initial={false}
+                        animate={{y: `${-10 * Number(digit)}%`}}
+                        transition={ROLL}
+                    >
+                        {REEL.map((d) => <span key={d}>{d}</span>)}
+                    </motion.span>
+                </span>
+            ))}
+        </span>
+    );
+}
+
 // canEdit off means a read-only room: copying and downloading stay, and every
 // control that writes is gone — raw links included, since each one is a copy
 // counted against the session's storage. Reordering is a write too.
@@ -366,9 +400,8 @@ export function BlockItem({
 
     const timestamp = formatTime(block.created_at);
 
-    const title = block.type === 'file'
-        ? (block.original_filename || block.filename || 'file')
-        : rendered ? `code · ${rendered.language}` : 'text';
+    // Only a file has a name worth a heading; text and code speak for themselves.
+    const fileName = block.type === 'file' ? (block.original_filename || block.filename || 'file') : null;
 
     return (
         // --i staggers the CSS entrance down the list. Motion owns the rest:
@@ -400,7 +433,8 @@ export function BlockItem({
             onDragTransitionEnd={() => setIsLifted(false)}
         >
             <header className="block-head">
-                <span className="block-title" title={title}>{title}</span>
+                <BlockMark n={index + 1} />
+                {fileName && <span className="block-title" title={fileName}>{fileName}</span>}
                 <span className="block-meta">
                     {block.created_by === '__curl__' && (
                         <>
@@ -517,7 +551,7 @@ export function BlockItem({
                     /* An <img> never executes script, so an uploaded SVG stays
                        inert here. Deliberately not a link to the blob: opening
                        one as a document would run it on this origin. */
-                    <img className="block-thumb" src={previewUrl} alt={title} />
+                    <img className="block-thumb" src={previewUrl} alt={fileName} />
                 ) : null}
             </div>
 
