@@ -311,8 +311,12 @@ export function ClipboardInterface() {
     // claimed whole — preventDefault keeps it from moving focus off the dialog
     // it just opened, and the click it would become is swallowed, so the button
     // under the pointer does not fire behind the question.
+    //
+    // Armed only while the composer is on screen. A room turned read-only
+    // hides it with isCreating still set, and the next press anywhere asked to
+    // discard a draft nobody could see — and swallowed the click.
     useEffect(() => {
-        if (!isCreating) return undefined;
+        if (!isCreating || !canEdit) return undefined;
         let swallowClick = false;
         const onMouseDown = async (e) => {
             swallowClick = false;
@@ -354,7 +358,7 @@ export function ClipboardInterface() {
             document.removeEventListener('mousedown', onMouseDown, true);
             document.removeEventListener('click', onClick, true);
         };
-    }, [isCreating, confirm]);
+    }, [isCreating, canEdit, confirm]);
 
     // N opens a new item from anywhere the key is not already text: not in a
     // field or the language picker, not mid-composition, not under a dialog.
