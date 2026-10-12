@@ -400,6 +400,7 @@ export function ClipboardInterface() {
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [canEdit, isCreating]);
 
+    // Rethrown so the form knows to offer Save again; a success closes it.
     const handleCreateTextBlock = async (content) => {
         try {
             await createTextBlock(sessionData.connection_id, sessionData.user_id, content);
@@ -407,6 +408,7 @@ export function ClipboardInterface() {
             toast.success('Saved');
         } catch (err) {
             toast.error('Failed to save: ' + err.message);
+            throw err;
         }
     };
 
@@ -427,6 +429,7 @@ export function ClipboardInterface() {
             toast.success('Uploaded');
         } catch (err) {
             toast.error('Failed to upload: ' + err.message);
+            throw err;
         }
     };
 
@@ -907,6 +910,10 @@ function NameEditor({name, onRename}) {
 function TextBlockForm({mode = 'text', onSubmit, onCancel, onDirtyChange, initialContent = '', initialLanguage = 'auto'}) {
     const [content, setContent] = useState(initialContent);
     const [language, setLanguage] = useState(initialLanguage);
+    // Held from the first press until the save fails or the composer goes:
+    // a second Save or Cmd+Enter while the first was out posted it twice, and
+    // a closing card still takes keys for the length of its fade.
+    const [isSaving, setIsSaving] = useState(false);
     const inputRef = useRef(null);
 
     useEffect(() => {
@@ -921,17 +928,25 @@ function TextBlockForm({mode = 'text', onSubmit, onCancel, onDirtyChange, initia
 
     const isCode = mode === 'code';
 
+    const save = async () => {
+        if (!content.trim() || isSaving) return;
+        setIsSaving(true);
+        try {
+            await onSubmit(content, language);
+        } catch {
+            setIsSaving(false);
+        }
+    };
+
     const handleSubmit = (e) => {
         e.preventDefault();
-        if (content.trim()) {
-            onSubmit(content, language);
-        }
+        save();
     };
 
     const handleKeyDown = (e) => {
         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault();
-            if (content.trim()) onSubmit(content, language);
+            save();
         }
     };
 
@@ -987,7 +1002,7 @@ function TextBlockForm({mode = 'text', onSubmit, onCancel, onDirtyChange, initia
                     <button type="button" className="compose-cancel" onClick={onCancel}>
                         Cancel
                     </button>
-                    <button type="submit" className="compose-submit" disabled={!content.trim()}>
+                    <button type="submit" className="compose-submit" disabled={!content.trim() || isSaving}>
                         Save
                     </button>
                 </div>
@@ -1013,8 +1028,8 @@ function FileUploadForm({onSubmit, onCancel, onDirtyChange}) {
         setIsUploading(true);
         try {
             await onSubmit(file);
-        } finally {
-            setIsUploading(false);
+        } catch {
+            setIsUploading(false);  // as for text, only a failure offers it again
         }
     };
 
