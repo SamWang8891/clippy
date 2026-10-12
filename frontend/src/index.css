@@ -60,8 +60,13 @@ html, body, #root {
     min-height: 100vh;
 }
 
+/* Ligatures off everywhere: this is a clipboard, so text must look exactly as
+   typed. JetBrains Mono's contextual alternates drew "// " as a single slash —
+   the first one vanished the moment a space followed it — and fonts with code
+   ligatures rewrite "->", "!=" and the "//" in URLs the same way. */
 body {
     font-family: var(--font-sans);
+    font-variant-ligatures: none;
     font-size: 15px;
     line-height: 1.55;
     color: var(--fg);
