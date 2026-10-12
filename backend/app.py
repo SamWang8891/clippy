@@ -91,6 +91,9 @@ TRUSTED_PROXIES = tuple(
     if entry.strip()
 )
 
+# Member names, as the entry and rename fields also cap them (maxLength).
+MAX_USER_NAME_LENGTH = 64
+
 # Wire-format constant, NOT an API version: it is baked into the key derivation
 # and must byte-match KDF_PREFIX in frontend/src/utils/encryption.js. Changing it
 # makes every previously stored block undecryptable. Do not sweep it with an
@@ -247,7 +250,7 @@ class SessionInfo(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    user_name: str | None = Field(default=None, max_length=64)
+    user_name: str | None = Field(default=None, max_length=MAX_USER_NAME_LENGTH)
     # Optional vanity id. Validated against CONNECTION_ID_ALPHABET before use —
     # it ends up as a directory name under UPLOAD_DIR, so nothing outside
     # [a-z0-9] may ever reach the filesystem.
@@ -256,7 +259,7 @@ class CreateSessionRequest(BaseModel):
 
 class JoinSessionRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
-    user_name: str | None = Field(default=None, max_length=64)
+    user_name: str | None = Field(default=None, max_length=MAX_USER_NAME_LENGTH)
 
 
 class CreateBlockRequest(BaseModel):
@@ -299,7 +302,7 @@ class DestroySessionRequest(BaseModel):
 class RenameRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
-    user_name: str = Field(max_length=64)
+    user_name: str = Field(max_length=MAX_USER_NAME_LENGTH)
 
 
 class TransferHostRequest(BaseModel):
@@ -445,16 +448,21 @@ class Session:
         ``exclude`` leaves one member's own name out of the comparison, so
         renaming to the name you already hold is not a collision with yourself.
 
-        Examples: "Sam" -> "Sam", "Sam(2)", "Sam(3)", etc.
+        Examples: "Sam" -> "Sam", "Sam(2)", "Sam(3)", etc. A name already at
+        MAX_USER_NAME_LENGTH gives up its tail to the suffix rather than
+        growing past the cap.
         """
         existing_names = {user.name for user in self.users.values() if user.id != exclude}
         if base_name not in existing_names:
             return base_name
 
         counter = 2
-        while f"{base_name}({counter})" in existing_names:
+        while True:
+            suffix = f"({counter})"
+            candidate = base_name[:MAX_USER_NAME_LENGTH - len(suffix)] + suffix
+            if candidate not in existing_names:
+                return candidate
             counter += 1
-        return f"{base_name}({counter})"
 
     def add_user(self, token: str, user_id: str, name: str) -> User:
         """Add a new user to the session with a unique name."""

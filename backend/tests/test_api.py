@@ -201,6 +201,21 @@ def test_members_rename_themselves_and_everyone_hears_it(client):
     assert r.status_code == 403  # the public id is not a credential
 
 
+def test_name_suffixes_stay_within_the_length_cap(client):
+    import app as app_module
+
+    long_name = "x" * app_module.MAX_USER_NAME_LENGTH
+    host = client.post("/api/v2/session/create", json={"user_name": long_name}).json()["data"]
+    cid = host["connection_id"]
+    second = _join(client, cid, name=long_name)["user_name"]
+    third = _join(client, cid, name=long_name)["user_name"]
+    assert second == "x" * 61 + "(2)"
+    assert third == "x" * 61 + "(3)"
+    assert {len(n) for n in (second, third)} == {app_module.MAX_USER_NAME_LENGTH}
+    assert _join(client, cid, name="Sam")["user_name"] == "Sam"
+    assert _join(client, cid, name="Sam")["user_name"] == "Sam(2)"
+
+
 def test_blank_names_do_not_reach_the_lobby(client):
     r = client.post("/api/v2/session/create", json={"user_name": "   "})
     assert r.status_code == 200

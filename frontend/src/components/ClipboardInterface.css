@@ -115,11 +115,15 @@
     background: var(--fg);
 }
 
+/* Capped here rather than on the name: the row is what an overlong name has
+   to fit, and min-width lets the name shrink into an ellipsis inside it. */
 .desk-user {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     font-size: 14px;
+    max-width: 100%;
+    min-width: 0;
 }
 
 /* Button and input share one box: the padding the input needs for its border
@@ -169,8 +173,12 @@
     }
 }
 
+/* The name gives way to a long name, the tags never do — READ-ONLY would
+   break at its hyphen. */
 .desk-host-tag {
     display: inline-flex;
+    flex: none;
+    white-space: nowrap;
     align-items: center;
     padding: 2px 7px;
     font-size: 11px;
