@@ -61,9 +61,10 @@ html, body, #root {
 }
 
 /* No scroll anchoring. A block arriving above the view made the browser
-   scroll to hold whatever it had picked as its anchor still — the desk, or
-   failing that the footer — which shoved the page under an eased move. Here
-   content moves and the scroll position stays put. */
+   scroll to hold whatever it had picked as its anchor still, which shoved the
+   page under an eased move; ruling out the desk alone only moved the anchor
+   to an element around it. Here content moves and the scroll position stays
+   put. */
 html {
     overflow-anchor: none;
 }
