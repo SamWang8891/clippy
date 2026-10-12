@@ -275,6 +275,18 @@ export function ClipboardInterface() {
         composeDirtyRef.current = dirty;
     }, []);
 
+    // Esc puts an empty composer away, as Cancel does, and leaves focus on New
+    // item so Enter or N brings it straight back. With something in it Esc does
+    // nothing — a stray press must not throw work away. A key the language
+    // picker already used (closing its list) or an IME's own Esc is not ours.
+    const handleComposeKeyDown = (e) => {
+        if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing) return;
+        if (composeDirtyRef.current) return;
+        e.preventDefault();
+        closeComposer();
+        requestAnimationFrame(() => document.querySelector('.compose-open')?.focus());
+    };
+
     // A press anywhere outside the composer puts it away: at once when it is
     // empty, after asking when it holds unsaved work. Scrollbars, toasts, drag
     // grips and the question itself do not count as outside.
@@ -664,7 +676,14 @@ export function ClipboardInterface() {
                 {!canEdit ? null : isCreating ? (
                     // layout animates the card's height between forms; the
                     // children ride along by position, so text never squashes.
-                    <motion.div className="compose" ref={composeRef} layout transition={QUICK} style={{borderRadius: 8}}>
+                    <motion.div
+                        className="compose"
+                        ref={composeRef}
+                        layout
+                        transition={QUICK}
+                        style={{borderRadius: 8}}
+                        onKeyDown={handleComposeKeyDown}
+                    >
                         <motion.div className="compose-tabs" role="tablist" layout="position">
                             {COMPOSE_TABS.map((t) => (
                                 <motion.button
