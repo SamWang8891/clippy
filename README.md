@@ -4,7 +4,7 @@
 
 # Clippy
 
-<img src="https://img.shields.io/badge/Version-v2.1.0-green">
+<img src="https://img.shields.io/badge/Version-v2.2.0-green">
 
 A web-based application that allows users to share text and files in real-time through secure, encrypted sessions.
 
