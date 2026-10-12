@@ -822,6 +822,10 @@ def test_block_order_survives_a_restart():
     session.move_block("z", None)
     restored = app_module.Session.from_dict(json_roundtrip(session.to_dict()))
     assert list(restored.blocks) == ["z", "x", "y"]
+    # A restored room keeps moving; it once had no move count and every read
+    # or move of it failed.
+    restored.move_block("y", None)
+    assert (list(restored.blocks), restored.order_version) == (["y", "z", "x"], 1)
 
 
 def json_roundtrip(data):

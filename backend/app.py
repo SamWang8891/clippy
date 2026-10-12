@@ -600,6 +600,7 @@ class Session:
             t: uid for t, uid in data.get("tokens", {}).items() if uid in instance.users
         }
         instance.blocks = {bid: Block(**b) for bid, b in data.get("blocks", {}).items()}
+        instance.order_version = 0  # see __init__: counted afresh after a restart
         instance.block_bytes = dict(data.get("block_bytes", {}))
         instance.total_bytes = sum(instance.block_bytes.values())
         instance.reserved_bytes = 0
