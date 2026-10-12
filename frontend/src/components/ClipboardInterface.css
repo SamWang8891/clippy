@@ -122,8 +122,10 @@
     padding: 2px 6px;
     margin: -2px -6px;
     border-radius: 4px;
+    /* No max-width: 100% here. The parent is sized net of the negative margin,
+       so a percentage cap left a lone name 12px short and cut it off. min-width
+       is what lets an overlong one shrink and ellipsize instead. */
     min-width: 0;
-    max-width: 100%;
 }
 
 .desk-user-name {
