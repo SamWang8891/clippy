@@ -1,7 +1,10 @@
+/* Room to scroll past the last card, so it never sits on the bottom edge
+   and a composer opened at the end can be brought to mid-screen. */
 .desk {
     display: flex;
     flex-direction: column;
     gap: 24px;
+    padding-bottom: 40vh;
     animation: rise-in 320ms var(--ease) backwards;
 }
 

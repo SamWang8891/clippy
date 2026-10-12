@@ -46,6 +46,13 @@ function applyOrder(blocks, order) {
 // The block a block sits right after — what the server takes as its anchor.
 const anchorOf = (ids, id) => ids[ids.indexOf(id) - 1] ?? null;
 
+// Brings the composer to the middle of the screen: it opens where the list
+// ends, often below the fold. A glide, unless motion is turned down.
+function centerInView(node) {
+    const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    node?.scrollIntoView({behavior: still ? 'auto' : 'smooth', block: 'center'});
+}
+
 // Keep `heard` if it is newer than the order in `ref`, by the server's move
 // count: replies and broadcasts travel separately, so either can land late.
 function noteOrder(ref, heard) {
@@ -298,6 +305,12 @@ export function ClipboardInterface() {
         setIsCreating(true);
     };
 
+    // Each opening glides the new card into view; the form focuses its field
+    // without scrolling, so the page does not jump there first.
+    useEffect(() => {
+        if (isCreating && canEdit) centerInView(composeRef.current);
+    }, [isCreating, canEdit, composeSession]);
+
     const closeComposer = () => {
         composeDirtyRef.current = false;
         setIsCreating(false);
@@ -392,8 +405,12 @@ export function ClipboardInterface() {
             if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="combobox"]')) return;
             if (document.querySelector('.confirm-dialog, .menu-panel, .qr-popup')) return;
             e.preventDefault();
-            if (isCreating) composeRef.current?.querySelector('textarea, input[type="file"]')?.focus();
-            else openComposer();
+            if (!isCreating) {
+                openComposer();
+                return;
+            }
+            composeRef.current?.querySelector('textarea, input[type="file"]')?.focus({preventScroll: true});
+            centerInView(composeRef.current);
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
@@ -932,8 +949,9 @@ function TextBlockForm({mode = 'text', onSubmit, onCancel, onDirtyChange, initia
 
     // Switching Text/Code or picking a language is a click on a button, which
     // takes focus with it — and the next keystrokes landed on that button.
+    // This is also what focuses a fresh composer; the desk scrolls it in.
     useEffect(() => {
-        inputRef.current?.focus();
+        inputRef.current?.focus({preventScroll: true});
     }, [mode]);
 
     const isCode = mode === 'code';
@@ -977,7 +995,6 @@ function TextBlockForm({mode = 'text', onSubmit, onCancel, onDirtyChange, initia
                 onKeyDown={handleKeyDown}
                 placeholder={placeholder}
                 aria-label={isCode ? 'Code' : 'Text'}
-                autoFocus
             />
             <div className="compose-foot">
                 <div className="compose-stats">
