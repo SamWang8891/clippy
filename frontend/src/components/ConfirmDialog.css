@@ -102,3 +102,27 @@
 .confirm-button.danger:hover {
     opacity: 0.88;
 }
+
+.confirm-button.extra {
+    margin-right: auto;
+    color: var(--danger);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+}
+
+.confirm-button.extra:hover {
+    border-color: var(--danger);
+}
+
+/* The dialog opens with focus on its action. A mouse opening it does not
+   trigger :focus-visible, so the ring is drawn on plain :focus — the default
+   choice has to be visible however the dialog was reached. */
+.confirm-button:focus {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+}
+
+.confirm-button.primary:focus,
+.confirm-button.danger:focus {
+    opacity: 0.88;
+}

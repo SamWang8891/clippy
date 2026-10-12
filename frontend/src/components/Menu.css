@@ -3,7 +3,6 @@
     inset: 0;
     background: rgba(10, 10, 10, 0.32);
     z-index: 50;
-    animation: menu-fade 140ms var(--ease);
 }
 
 [data-theme="dark"] .menu-overlay {
@@ -26,17 +25,6 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
-    animation: menu-slide 160ms var(--ease);
-}
-
-@keyframes menu-slide {
-    from { opacity: 0; transform: translateY(-6px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes menu-fade {
-    from { opacity: 0; }
-    to { opacity: 1; }
 }
 
 @media (max-width: 639px) {

@@ -1,14 +1,18 @@
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import secrets
 import shutil
 import string
+import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from http import HTTPStatus
@@ -73,6 +77,26 @@ MAX_RAW_LINKS_PER_SESSION = int(os.getenv("MAX_RAW_LINKS_PER_SESSION", "50"))
 MAX_CURL_UPLOAD_BYTES = int(os.getenv("MAX_CURL_UPLOAD_MIB", "64")) * 1024 * 1024
 # Serve interactive API docs only when explicitly enabled.
 ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
+# A new session costs memory and a directory and needs no credential, so one
+# address may only start a few in a short window. Joining is never counted.
+# A limit of 0 turns this off.
+CREATE_RATE_LIMIT = int(os.getenv("CREATE_RATE_LIMIT", "3"))
+CREATE_RATE_WINDOW_SECONDS = float(os.getenv("CREATE_RATE_WINDOW_SECONDS", "15"))
+# The hops whose X-Real-IP is believed, as comma-separated addresses or CIDR
+# ranges. The image runs nginx beside the app, so loopback is all it needs; a
+# proxy in another container or on another host has to be listed.
+TRUSTED_PROXIES = tuple(
+    ipaddress.ip_network(entry.strip(), strict=False)
+    for entry in os.getenv("TRUSTED_PROXIES", "127.0.0.1").split(",")
+    if entry.strip()
+)
+
+# Member names, as the entry and rename fields also cap them (maxLength).
+MAX_USER_NAME_LENGTH = 64
+# A deleted block waits this long, files and all, for an undo before it is gone
+# for good. The page offers undo for ten seconds, held a while longer as the
+# user steps back through several; this outlasts that with room to spare.
+TRASH_SECONDS = 120
 
 # Wire-format constant, NOT an API version: it is baked into the key derivation
 # and must byte-match KDF_PREFIX in frontend/src/utils/encryption.js. Changing it
@@ -149,7 +173,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="Clippy API",
     description="Secure collaborative clipboard with real-time file and text sharing",
-    version="2.1.0",
+    version="2.2.0",
     openapi_url="/api/v2/openapi.json" if ENABLE_DOCS else None,
     docs_url="/api/v2/docs" if ENABLE_DOCS else None,
     redoc_url=None,
@@ -220,11 +244,13 @@ class SessionInfo(BaseModel):
     allow_join: bool
     allow_curl_upload: bool
     is_public: bool
+    allow_edit: bool
     host_id: str
+    order_version: int
 
 
 class CreateSessionRequest(BaseModel):
-    user_name: str | None = Field(default=None, max_length=64)
+    user_name: str | None = Field(default=None, max_length=MAX_USER_NAME_LENGTH)
     # Optional vanity id. Validated against CONNECTION_ID_ALPHABET before use —
     # it ends up as a directory name under UPLOAD_DIR, so nothing outside
     # [a-z0-9] may ever reach the filesystem.
@@ -233,7 +259,7 @@ class CreateSessionRequest(BaseModel):
 
 class JoinSessionRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
-    user_name: str | None = Field(default=None, max_length=64)
+    user_name: str | None = Field(default=None, max_length=MAX_USER_NAME_LENGTH)
 
 
 class CreateBlockRequest(BaseModel):
@@ -243,12 +269,31 @@ class CreateBlockRequest(BaseModel):
     # upload has no filename and can never be downloaded.
     type: Literal["text"] = "text"
     content: str | None = Field(default=None, max_length=MAX_TEXT_BLOCK_LENGTH)
+    # Echoed in the block_created broadcast, so the page that saved can tell
+    # its own new block from any other; see client_ref in the frontend.
+    client_ref: str | None = Field(default=None, max_length=64)
 
 
 class DeleteBlockRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
     block_id: str = Field(min_length=1, max_length=64)
+
+
+class RestoreBlockRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
+
+
+class MoveBlockRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
+    # The block it should follow; None puts it first. An anchor rather than an
+    # index, so a block added or removed by someone else meanwhile does not
+    # shift where this one lands.
+    after_id: str | None = Field(default=None, max_length=64)
 
 
 class UpdateTextBlockRequest(BaseModel):
@@ -261,6 +306,17 @@ class UpdateTextBlockRequest(BaseModel):
 class DestroySessionRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
+
+
+class LeaveSessionRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+
+
+class RenameRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    user_name: str = Field(max_length=MAX_USER_NAME_LENGTH)
 
 
 class TransferHostRequest(BaseModel):
@@ -286,6 +342,12 @@ class TogglePublicRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
     is_public: bool
+
+
+class ToggleEditRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    allow_edit: bool
 
 
 class RawLink(BaseModel):
@@ -338,7 +400,17 @@ class Session:
         # Secret member token -> public user id. Never serialized to clients.
         self.tokens: dict[str, str] = {host_token: host_id}
         self.blocks: dict[str, Block] = {}
+        # Moves so far. Every order sent out carries it, so a client can tell an
+        # order it has already moved past from a newer one. Not persisted:
+        # clients read it afresh with the session when they reconnect.
+        self.order_version = 0
         self.block_bytes: dict[str, int] = {}  # block_id -> byte size on disk
+        # Deleted blocks still open to an undo: id -> (block, byte size, the
+        # block it sat after, when it went). Their files stay on disk and their
+        # bytes stay counted until purge_trash lets them go.
+        # ponytail: not saved with the session, so a restart forgets them and
+        # leaves their files to go with the session's directory.
+        self.trash: dict[str, tuple[Block, int, str | None, float]] = {}
         self.total_bytes = 0
         # Bytes promised to in-flight uploads that have not yet been committed,
         # so concurrent uploads can't all size themselves off the same baseline.
@@ -349,6 +421,10 @@ class Session:
         # its connection id, which is also the KDF input, so anyone reading the
         # lobby can read the content. That has to be a deliberate act.
         self.is_public = False
+        # Whether members besides the host may change the content. Off until
+        # the host hands it out: sharing the ID shares the reading. Separate
+        # from is_public — a listed room can be open, a private one read-only.
+        self.allow_edit = False
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.websockets: dict[str, set[WebSocket]] = {}
@@ -364,6 +440,10 @@ class Session:
     def is_host_token(self, token: str) -> bool:
         uid = self.tokens.get(token)
         return uid is not None and self.users[uid].is_host
+
+    def can_edit(self, user_id: str) -> bool:
+        """Whether a member may change the content. The host always may."""
+        return self.allow_edit or self.users[user_id].is_host
 
     def committed_bytes(self) -> int:
         return self.total_bytes + self.reserved_bytes
@@ -389,20 +469,28 @@ class Session:
         """Check if session has exceeded the timeout period."""
         return datetime.now() - self.last_activity > SESSION_TIMEOUT
 
-    def get_unique_name(self, base_name: str) -> str:
+    def get_unique_name(self, base_name: str, exclude: str | None = None) -> str:
         """
         Generate a unique user name by appending numbers if duplicates exist.
 
-        Examples: "Sam" -> "Sam", "Sam(2)", "Sam(3)", etc.
+        ``exclude`` leaves one member's own name out of the comparison, so
+        renaming to the name you already hold is not a collision with yourself.
+
+        Examples: "Sam" -> "Sam", "Sam(2)", "Sam(3)", etc. A name already at
+        MAX_USER_NAME_LENGTH gives up its tail to the suffix rather than
+        growing past the cap.
         """
-        existing_names = {user.name for user in self.users.values()}
+        existing_names = {user.name for user in self.users.values() if user.id != exclude}
         if base_name not in existing_names:
             return base_name
 
         counter = 2
-        while f"{base_name}({counter})" in existing_names:
+        while True:
+            suffix = f"({counter})"
+            candidate = base_name[:MAX_USER_NAME_LENGTH - len(suffix)] + suffix
+            if candidate not in existing_names:
+                return candidate
             counter += 1
-        return f"{base_name}({counter})"
 
     def add_user(self, token: str, user_id: str, name: str) -> User:
         """Add a new user to the session with a unique name."""
@@ -412,6 +500,20 @@ class Session:
         self.tokens[token] = user_id
         self.update_activity()
         return user
+
+    def rename_user(self, user_id: str, name: str) -> bool:
+        """Rename a member, keeping names unique. Returns whether it changed.
+
+        A blank name changes nothing: clearing the field is backing out of an
+        edit, not asking to be renamed to a random animal.
+        """
+        user = self.users[user_id]
+        new_name = self.get_unique_name(name, exclude=user_id) if name else user.name
+        if new_name == user.name:
+            return False
+        user.name = new_name
+        self.update_activity()
+        return True
 
     def remove_user(self, user_id: str):
         """Remove a user, their token and their WebSocket connections."""
@@ -446,22 +548,51 @@ class Session:
         self.total_bytes += byte_size
         self.update_activity()
 
+    def move_block(self, block_id: str, after_id: str | None) -> None:
+        """Re-seat a block right after ``after_id``, or first when it is None.
+
+        Order is the dict's insertion order, which is also what gets persisted,
+        so moving a block means rebuilding the dict around it.
+        """
+        order = [bid for bid in self.blocks if bid != block_id]
+        order.insert(order.index(after_id) + 1 if after_id else 0, block_id)
+        self.blocks = {bid: self.blocks[bid] for bid in order}
+        self.order_version += 1
+        self.update_activity()
+
     def delete_block(self, block_id: str):
-        """Delete a block, its files, and any raw links exposing its content."""
+        """Take a block out of the session, into the trash for a while.
+
+        Its raw links go at once: they serve *decrypted* content, and leaving
+        one alive keeps publishing data the user believes they deleted.
+        """
         if block_id in self.blocks:
-            block = self.blocks[block_id]
-            if block.type == "file" and block.filename:
-                file_path = self.session_dir / block.filename
-                file_path.unlink(missing_ok=True)
-            elif block.type == "text":
-                text_file = self.session_dir / f"text_block_{block_id}.txt"
-                text_file.unlink(missing_ok=True)
-            del self.blocks[block_id]
-            self.total_bytes -= self.block_bytes.pop(block_id, 0)
-        # A raw link serves *decrypted* content, so leaving it alive after the
-        # block is gone keeps publishing data the user believes they deleted.
+            ids = list(self.blocks)
+            at = ids.index(block_id)
+            block = self.blocks.pop(block_id)
+            size = self.block_bytes.pop(block_id, 0)
+            self.trash[block_id] = (block, size, ids[at - 1] if at else None, time.monotonic())
         purge_raw_links_for_block(self.connection_id, block_id)
         self.update_activity()
+
+    def restore_block(self, block_id: str) -> None:
+        """Put a trashed block back after the block it sat after, or first
+        when that one has gone too."""
+        block, size, after_id, _ = self.trash.pop(block_id)
+        self.blocks[block_id] = block
+        self.block_bytes[block_id] = size
+        self.move_block(block_id, after_id if after_id in self.blocks else None)
+
+    def purge_trash(self, older_than: float = TRASH_SECONDS) -> None:
+        """Let trashed blocks past their undo go for good, files and bytes."""
+        now = time.monotonic()
+        for block_id in [b for b, (*_, gone_at) in self.trash.items() if now - gone_at >= older_than]:
+            block, size, _, _ = self.trash.pop(block_id)
+            if block.type == "file" and block.filename:
+                (self.session_dir / block.filename).unlink(missing_ok=True)
+            elif block.type == "text":
+                (self.session_dir / f"text_block_{block_id}.txt").unlink(missing_ok=True)
+            self.total_bytes -= size
 
     async def broadcast(self, message: dict, exclude_user: str | None = None):
         """
@@ -492,6 +623,7 @@ class Session:
             "allow_join": self.allow_join,
             "allow_curl_upload": self.allow_curl_upload,
             "is_public": self.is_public,
+            "allow_edit": self.allow_edit,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
         }
@@ -509,12 +641,20 @@ class Session:
             t: uid for t, uid in data.get("tokens", {}).items() if uid in instance.users
         }
         instance.blocks = {bid: Block(**b) for bid, b in data.get("blocks", {}).items()}
+        instance.order_version = 0  # see __init__: counted afresh after a restart
+        instance.trash = {}  # see __init__: not saved
         instance.block_bytes = dict(data.get("block_bytes", {}))
         instance.total_bytes = sum(instance.block_bytes.values())
         instance.reserved_bytes = 0
         instance.allow_join = data.get("allow_join", True)
         instance.allow_curl_upload = data.get("allow_curl_upload", False)
-        instance.is_public = data.get("is_public", False)
+        # Rooms saved before editing could be kept to the host let every member
+        # edit, so that is what they come back as. Dev builds briefly saved one
+        # three-way `visibility` instead; a room saved listed read-only must not
+        # come back open to edits.
+        legacy = data.get("visibility")
+        instance.is_public = data.get("is_public", legacy in ("public_read", "public_edit"))
+        instance.allow_edit = data.get("allow_edit", legacy != "public_read")
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
         # Snapshots written before created_at existed fall back to the last
         # activity rather than "now", which would reshuffle the lobby on restart.
@@ -716,7 +856,12 @@ def load_raw_links_sync() -> None:
             logger.warning("Skipping malformed raw links for %s: %s", cid, e)
 
 
-def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> JSONResponse:
+def api_response(
+        status: HTTPStatus,
+        message: str,
+        data: dict | None = None,
+        headers: dict[str, str] | None = None,
+) -> JSONResponse:
     """
     Create a standardized API response with HTTP status code.
 
@@ -724,6 +869,7 @@ def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> 
         status: HTTP status code
         message: Human-readable message
         data: Optional dictionary of response data
+        headers: Optional extra response headers
 
     Returns:
         JSONResponse with consistent structure
@@ -734,7 +880,7 @@ def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> 
     }
     if data is not None:
         content["data"] = data
-    return JSONResponse(status_code=status.value, content=content)
+    return JSONResponse(status_code=status.value, content=content, headers=headers)
 
 
 async def _read_capped(reader, limit: int) -> bytes | None:
@@ -781,6 +927,92 @@ def bearer_token(request: Request) -> str:
 def new_member() -> tuple[str, str]:
     """Return (secret token, public user id) for a new member."""
     return secrets.token_urlsafe(32), uuid.uuid4().hex[:12]
+
+
+def edit_denied(session: "Session", token: str) -> JSONResponse | None:
+    """The refusal for a caller who may not change this session's content,
+    or None when they may. Every content-writing endpoint asks this first."""
+    uid = session.member_id(token)
+    if uid is None:
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    if not session.can_edit(uid):
+        return api_response(HTTPStatus.FORBIDDEN, "This connection is read-only")
+    return None
+
+
+def client_address(request: Request) -> str:
+    """The caller's address as the reverse proxy saw it.
+
+    nginx overwrites X-Real-IP on everything it forwards, so the header is
+    believed only when the hop handing it over is one of TRUSTED_PROXIES. From
+    anywhere else it is the caller's own claim, and believing it would let them
+    pick their rate-limit bucket. Any private address used to count as the
+    proxy, which let anything else on the network do exactly that.
+    """
+    peer = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-real-ip", "").strip()
+    try:
+        ip = ipaddress.ip_address(peer)
+        # A dual-stack socket reports an IPv4 hop as ::ffff:a.b.c.d.
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        from_proxy = any(ip in net for net in TRUSTED_PROXIES)
+    except ValueError:
+        from_proxy = False
+    return forwarded if forwarded and from_proxy else peer
+
+
+def rate_key(address: str) -> str:
+    """The bucket ``address`` counts against.
+
+    An IPv6 subscriber is handed a whole /64, so one bucket per address would
+    give each of them 2**64. An IPv4 caller reaching a dual-stack socket shows
+    up as ``::ffff:a.b.c.d``, and keying that by /64 would put every IPv4
+    caller in one bucket, so it counts as the IPv4 address it is.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 6 and ip.ipv4_mapped:
+        return str(ip.ipv4_mapped)
+    if ip.version == 6:
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return str(ip)
+
+
+# address -> monotonic times of its recent session creations, oldest first.
+# ponytail: in-process, so it resets on restart and is per worker; fine for the
+# single uvicorn process this ships as.
+creation_log: dict[str, deque[float]] = {}
+
+
+def creation_wait(address: str) -> float:
+    """Seconds until ``address`` may create another session; 0 when it may now."""
+    stamps = creation_log.get(address)
+    if CREATE_RATE_LIMIT <= 0 or not stamps:
+        return 0
+    now = time.monotonic()
+    while stamps and now - stamps[0] >= CREATE_RATE_WINDOW_SECONDS:
+        stamps.popleft()
+    if len(stamps) < CREATE_RATE_LIMIT:
+        return 0
+    return CREATE_RATE_WINDOW_SECONDS - (now - stamps[0])
+
+
+def record_creation(address: str) -> None:
+    # With the limit off nothing trims the log, so a busy address's stamps
+    # would pile up for as long as it kept creating.
+    if CREATE_RATE_LIMIT > 0:
+        creation_log.setdefault(address, deque()).append(time.monotonic())
+
+
+def prune_creation_log() -> None:
+    """Forget addresses whose newest creation has aged out of the window."""
+    now = time.monotonic()
+    for address in [a for a, s in creation_log.items()
+                    if not s or now - s[-1] >= CREATE_RATE_WINDOW_SECONDS]:
+        del creation_log[address]
 
 
 # Paths under /ws that are not sessions. A session named after one would be
@@ -908,6 +1140,8 @@ async def cleanup_expired_sessions():
         expired = [sid for sid, session in sessions.items() if session.is_expired()]
         for sid in expired:
             await _teardown_session(sid, "timeout")
+        for session in sessions.values():
+            session.purge_trash()
 
         now = datetime.now()
         stale = [
@@ -924,6 +1158,8 @@ async def cleanup_expired_sessions():
         if stale:
             mark_raw_links_dirty()
             mark_sessions_dirty()
+
+        prune_creation_log()
 
 
 @router.get(
@@ -978,14 +1214,15 @@ async def get_connection_id_length():
     summary="Create New Session",
     description="Create a new collaborative session and become the host"
 )
-async def create_session(request: CreateSessionRequest):
+async def create_session(request: CreateSessionRequest, http_request: Request):
     """
     Create a new collaborative session.
 
     Generates a unique session ID and creates the first user as the host.
     A caller may request its own ID; it still has to match the server's length
     and alphabet, and must not already be taken. If no user name is provided,
-    a random name will be generated.
+    a random name will be generated. Each address may create at most
+    CREATE_RATE_LIMIT sessions per CREATE_RATE_WINDOW_SECONDS.
 
     Returns session ID, user ID, user name, and host status.
     """
@@ -1012,6 +1249,18 @@ async def create_session(request: CreateSessionRequest):
             "Unable to create session: all connection IDs are currently in use. Please try again later."
         )
 
+    # Checked after validation so a typo is reported as a typo, and recorded
+    # only once the session exists so a refused request costs nothing.
+    address = rate_key(client_address(http_request))
+    wait = creation_wait(address)
+    if wait > 0:
+        seconds = math.ceil(wait)
+        return api_response(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            f"Too many new connections. Try again in {seconds}s.",
+            headers={"Retry-After": str(seconds)},
+        )
+
     token, user_id = new_member()
     # .strip(): a name of pure spaces is truthy, and it rendered as a blank
     # row in the public lobby and a blank entry in the member list.
@@ -1019,6 +1268,7 @@ async def create_session(request: CreateSessionRequest):
 
     session = Session(connection_id, token, user_id, user_name)
     sessions[connection_id] = session
+    record_creation(address)
     mark_sessions_dirty()
 
     return api_response(
@@ -1089,9 +1339,32 @@ async def join_session(request: JoinSessionRequest):
             "user_id": token,
             "public_id": user_id,
             "user_name": user.name,
-            "is_host": False
+            "is_host": False,
+            # The room's lobby label, so the entry form can say whose room
+            # an ID it was handed turned out to be.
+            "session_name": session.name,
         }
     )
+
+
+@router.post(
+    "/session/enter",
+    summary="Join or Create Session",
+    description="Join the session with this ID, or create it when there is none"
+)
+async def enter_session(request: CreateSessionRequest, http_request: Request):
+    """
+    The entry form's single way in: the server decides whether this joins or
+    creates, so the caller never has to know which it wanted. A live ID joins
+    that session; a free one creates it under that ID; no ID creates one under
+    a generated ID. Only the creating branch counts against the rate limit.
+    """
+    requested_id = (request.connection_id or "").strip().lower()
+    if requested_id in sessions:
+        return await join_session(
+            JoinSessionRequest(connection_id=requested_id, user_name=request.user_name)
+        )
+    return await create_session(request, http_request)
 
 
 @router.get(
@@ -1121,7 +1394,9 @@ async def get_session(connection_id: str, request: Request):
         allow_join=session.allow_join,
         allow_curl_upload=session.allow_curl_upload,
         is_public=session.is_public,
+        allow_edit=session.allow_edit,
         host_id=next((u.id for u in session.users.values() if u.is_host), ""),
+        order_version=session.order_version,
     )
 
     return api_response(
@@ -1129,6 +1404,31 @@ async def get_session(connection_id: str, request: Request):
         "Session retrieved",
         session_info.model_dump(),
     )
+
+
+@router.post(
+    "/session/leave",
+    summary="Leave Session",
+    description="Leave the session now; a leaving host hands the seat to the next member"
+)
+async def leave_session(request: LeaveSessionRequest):
+    """
+    Leave at once rather than when a dropped socket's grace runs out. Leaving
+    is a choice, so a host's seat goes to the next member even in a room kept
+    to its host, where a dropped connection would hold the seat for them.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+    uid = session.member_id(request.user_id)
+    if uid is None:
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    await _let_member_go(session, uid)
+    return api_response(HTTPStatus.OK, "Left", {"success": True})
 
 
 @router.post(
@@ -1169,6 +1469,37 @@ async def destroy_session(request: DestroySessionRequest):
         "Session destroyed",
         {"success": True}
     )
+
+
+@router.post(
+    "/session/rename",
+    summary="Rename Yourself",
+    description="Change the caller's own display name in the session"
+)
+async def rename_user(request: RenameRequest):
+    """
+    Rename the calling member. Any member may, read-only ones included — it is
+    their own label, not the session's content. A blank name is a no-op, and a
+    taken one is suffixed the same way joining does it.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+    uid = session.member_id(request.user_id)
+    if uid is None:
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    if session.rename_user(uid, request.user_name.strip()):
+        await session.broadcast({
+            "type": "user_renamed",
+            "user_id": uid,
+            "name": session.users[uid].name,
+        })
+
+    return api_response(HTTPStatus.OK, "Name updated", {"user_name": session.users[uid].name})
 
 
 @router.post(
@@ -1307,7 +1638,8 @@ async def toggle_public(request: TogglePublicRequest):
     Publish the session in the public lobby, or take it back down.
 
     Host only, and off by default: the lobby hands out the connection id, and
-    the connection id is what derives the content key.
+    the connection id is what derives the content key. Who may edit is a
+    separate switch; see toggle_edit.
     """
     connection_id = request.connection_id.lower()
 
@@ -1336,6 +1668,33 @@ async def toggle_public(request: TogglePublicRequest):
     await broadcast_public_sessions()
 
     return api_response(HTTPStatus.OK, "Visibility updated", {"success": True})
+
+
+@router.post(
+    "/session/toggle_edit",
+    summary="Toggle Member Editing",
+    description="Let every member change the content, or keep it to the host (host only)"
+)
+async def toggle_edit(request: ToggleEditRequest):
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    if not session.is_host_token(request.user_id):
+        return api_response(HTTPStatus.FORBIDDEN, "Only host can change who may edit")
+
+    session.allow_edit = request.allow_edit
+    session.update_activity()
+
+    await session.broadcast({
+        "type": "edit_permission_changed",
+        "allow_edit": request.allow_edit,
+    })
+
+    return api_response(HTTPStatus.OK, "Edit permission updated", {"success": True})
 
 
 @router.get(
@@ -1372,9 +1731,10 @@ async def create_text_block(request: CreateBlockRequest):
 
     session = sessions[connection_id]
 
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
     uid = session.member_id(request.user_id)
-    if uid is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     content_bytes = len(request.content.encode("utf-8")) if request.content else 0
     quota_error = session.quota_check(content_bytes)
@@ -1391,17 +1751,25 @@ async def create_text_block(request: CreateBlockRequest):
         created_at=datetime.now().isoformat(),
     )
 
+    text_file = session.session_dir / f"text_block_{block_id}.txt"
     if request.type == "text" and request.content:
-        text_file = session.session_dir / f"text_block_{block_id}.txt"
         async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
             await f.write(request.content)
+
+    # Asked again after every wait: the room may have turned read-only, or
+    # the member been removed, while the bytes were going to disk.
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        text_file.unlink(missing_ok=True)
+        return denied
 
     session.add_block(block, byte_size=content_bytes)
 
     # Broadcast new block
     await session.broadcast({
         "type": "block_created",
-        "block": block.model_dump()
+        "block": block.model_dump(),
+        "client_ref": request.client_ref,
     })
 
     return api_response(
@@ -1420,6 +1788,7 @@ async def upload_file_block(
         connection_id: str = Form(...),  # noqa: B008 — FastAPI dependency markers.
         user_id: str = Form(...),  # noqa: B008
         file: UploadFile = File(...),  # noqa: B008
+        client_ref: str | None = Form(None, max_length=64),  # noqa: B008 — as for text blocks
 ):
     """
     Upload a file to the session.
@@ -1435,9 +1804,10 @@ async def upload_file_block(
 
     session = sessions[connection_id]
 
+    denied = edit_denied(session, user_id)
+    if denied is not None:
+        return denied
     uid = session.member_id(user_id)
-    if uid is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
 
     quota_error = session.quota_check(0)
     if quota_error is not None:
@@ -1487,6 +1857,11 @@ async def upload_file_block(
         )
         return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
 
+    denied = edit_denied(session, user_id)  # the stream can outlast permission
+    if denied is not None:
+        file_path.unlink(missing_ok=True)
+        return denied
+
     block = Block(
         id=block_id,
         type="file",
@@ -1502,7 +1877,8 @@ async def upload_file_block(
     # Broadcast new block
     await session.broadcast({
         "type": "block_created",
-        "block": block.model_dump()
+        "block": block.model_dump(),
+        "client_ref": client_ref,
     })
 
     return api_response(
@@ -1531,8 +1907,9 @@ async def update_text_block(request: UpdateTextBlockRequest):
 
     session = sessions[connection_id]
 
-    if session.member_id(request.user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
 
     block = session.blocks.get(request.block_id)
     if block is None:
@@ -1600,8 +1977,9 @@ async def replace_file_block(
 
     session = sessions[connection_id]
 
-    if session.member_id(user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    denied = edit_denied(session, user_id)
+    if denied is not None:
+        return denied
 
     block = session.blocks.get(block_id)
     if block is None:
@@ -1654,6 +2032,14 @@ async def replace_file_block(
         )
         return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
 
+    denied = edit_denied(session, user_id)  # the stream can outlast permission
+    if denied is not None:
+        tmp_path.unlink(missing_ok=True)
+        return denied
+    if session.blocks.get(block_id) is not block:  # deleted while the file came in
+        tmp_path.unlink(missing_ok=True)
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+
     if old_filename and old_filename != safe_filename:
         (session.session_dir / old_filename).unlink(missing_ok=True)
 
@@ -1680,6 +2066,42 @@ async def replace_file_block(
     )
 
 
+@router.post(
+    "/block/move",
+    summary="Move Block",
+    description="Place a block right after another one, or first"
+)
+async def move_block(request: MoveBlockRequest):
+    """
+    Reorder the session's blocks. Writers only — in a read-only room that is
+    the host — and everyone receives the full new order, so a client that
+    missed an earlier move still ends up matching the server.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
+
+    if request.block_id not in session.blocks:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+    if request.after_id is not None and (
+            request.after_id == request.block_id or request.after_id not in session.blocks):
+        return api_response(HTTPStatus.NOT_FOUND, "Anchor block not found")
+
+    session.move_block(request.block_id, request.after_id)
+    moved = {"order": list(session.blocks), "version": session.order_version}
+
+    await session.broadcast({"type": "blocks_reordered", **moved})
+
+    return api_response(HTTPStatus.OK, "Block moved", moved)
+
+
 @router.delete(
     "/block/delete",
     summary="Delete Block",
@@ -1702,11 +2124,9 @@ async def delete_block(request: DeleteBlockRequest):
 
     session = sessions[connection_id]
 
-    if session.member_id(request.user_id) is None:
-        return api_response(
-            HTTPStatus.FORBIDDEN,
-            "User not in session"
-        )
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
 
     if request.block_id not in session.blocks:
         return api_response(
@@ -1727,6 +2147,45 @@ async def delete_block(request: DeleteBlockRequest):
         "Block deleted",
         {"success": True}
     )
+
+
+@router.post(
+    "/block/restore",
+    summary="Restore Block",
+    description="Undo a recent delete, putting the block back where it was"
+)
+async def restore_block(request: RestoreBlockRequest):
+    """
+    Bring back a block deleted within TRASH_SECONDS. Writers only, as deleting
+    is. Everyone receives the block with the whole new order, in one message,
+    so it appears in its place rather than at the end first.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
+
+    if request.block_id not in session.trash:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+    if len(session.blocks) >= MAX_BLOCKS_PER_SESSION:
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"Block limit reached ({MAX_BLOCKS_PER_SESSION})")
+
+    session.restore_block(request.block_id)
+    restored = {
+        "block": session.blocks[request.block_id].model_dump(),
+        "order": list(session.blocks),
+        "version": session.order_version,
+    }
+
+    await session.broadcast({"type": "block_restored", **restored})
+
+    return api_response(HTTPStatus.OK, "Block restored", restored)
 
 
 @router.get(
@@ -1798,8 +2257,11 @@ async def create_raw_text_link(request: CreateRawTextRequest):
         return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
-    if session.member_id(request.user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    # Writers only: each link is a copy counted against the session's storage
+    # and link caps, which a read-only visitor must not be able to spend.
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
     if request.block_id not in session.blocks:
         return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
@@ -1819,6 +2281,16 @@ async def create_raw_text_link(request: CreateRawTextRequest):
     filename = f"{code}.txt"
     async with aiofiles.open(raw_dir / filename, "w", encoding="utf-8") as f:
         await f.write(request.content)
+
+    denied = edit_denied(session, request.user_id)  # permission can lapse mid-write
+    if denied is not None:
+        (raw_dir / filename).unlink(missing_ok=True)
+        return denied
+    # Deleted while the copy was written: its links have been purged already,
+    # and this one would serve the deleted content for its whole TTL.
+    if request.block_id not in session.blocks:
+        (raw_dir / filename).unlink(missing_ok=True)
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
     now = datetime.now()
     link = RawLink(
@@ -1861,8 +2333,9 @@ async def create_raw_file_link(
         return api_response(HTTPStatus.NOT_FOUND, "Session not found")
 
     session = sessions[connection_id]
-    if session.member_id(user_id) is None:
-        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+    denied = edit_denied(session, user_id)  # writers only, as for text links
+    if denied is not None:
+        return denied
     if block_id not in session.blocks:
         return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
@@ -1915,6 +2388,14 @@ async def create_raw_file_link(
             else "Session storage quota exceeded"
         )
         return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, message)
+
+    denied = edit_denied(session, user_id)  # the stream can outlast permission
+    if denied is not None:
+        file_path.unlink(missing_ok=True)
+        return denied
+    if block_id not in session.blocks:  # deleted meanwhile; see the text link
+        file_path.unlink(missing_ok=True)
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
     now = datetime.now()
     link = RawLink(
@@ -1975,6 +2456,20 @@ async def serve_raw_link(connection_id: str, code: str):
     )
 
 
+def curl_refusal(session: "Session") -> JSONResponse | None:
+    """Why ``session`` takes no curl upload right now, or None when it does.
+
+    A curl upload carries no member token, so it cannot be the host writing:
+    a room kept to its host refuses it. Asked again once the body is in: a
+    64 MiB upload can outlast the host switching either setting off.
+    """
+    if not session.allow_curl_upload:
+        return JSONResponse(status_code=403, content={"ok": False, "error": "Curl upload is not enabled"})
+    if not session.allow_edit:
+        return JSONResponse(status_code=403, content={"ok": False, "error": "This connection is read-only"})
+    return None
+
+
 @app.post("/u/{connection_id}")
 async def curl_upload(connection_id: str, request: Request):
     """Accept text or file uploads via curl.
@@ -1993,8 +2488,9 @@ async def curl_upload(connection_id: str, request: Request):
 
     session = sessions[connection_id]
 
-    if not session.allow_curl_upload:
-        return JSONResponse(status_code=403, content={"ok": False, "error": "Curl upload is not enabled"})
+    refused = curl_refusal(session)
+    if refused is not None:
+        return refused
 
     # Reject anything that declares itself oversized before touching the body.
     declared = request.headers.get("content-length")
@@ -2035,6 +2531,11 @@ async def curl_upload(connection_id: str, request: Request):
 
             async with aiofiles.open(file_path, "wb") as f:
                 await f.write(encrypted_payload)
+
+            refused = curl_refusal(session)
+            if refused is not None:
+                file_path.unlink(missing_ok=True)
+                return refused
 
             block = Block(
                 id=block_id,
@@ -2086,18 +2587,27 @@ async def curl_upload(connection_id: str, request: Request):
         async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
             await f.write(encrypted_b64)
 
+        refused = curl_refusal(session)
+        if refused is not None:
+            text_file.unlink(missing_ok=True)
+            return refused
+
         session.add_block(block, byte_size=content_bytes)
 
         await session.broadcast({"type": "block_created", "block": block.model_dump()})
         return JSONResponse(status_code=200, content={"ok": True, "id": block_id})
 
 
-async def _remove_user_after_grace(connection_id: str, user_id: str):
+async def _remove_user_after_grace(connection_id: str, user_id: str, dropped_as_host: bool | None = None):
     """
     Wait for the grace period, then evict the user if they haven't reconnected.
 
     If the host leaves and other users remain, host privileges are auto-transferred
-    so the session keeps a host and the remaining users can still manage it.
+    so the session keeps a host and the remaining users can still manage it —
+    except in a room only its host may edit, which keeps the seat for a host
+    who dropped while holding it. ``dropped_as_host`` says whether they did;
+    None reads it now. Someone handed the seat while already away is let go
+    as usual, or the room would be locked on a member who is not there.
     """
     try:
         await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
@@ -2110,8 +2620,19 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
     user = session.users.get(user_id)
     if user is None or session.websockets.get(user_id):
         return
+    # Everyone else in a room kept to its host is a reader — in a listed one,
+    # whoever wandered in from the lobby — and the seat would hand the first of
+    # them the whole room. So it stays as its host left it, and their token
+    # still opens it when they come back.
+    held_seat = user.is_host if dropped_as_host is None else dropped_as_host
+    if user.is_host and held_seat and not session.allow_edit:
+        return
+    await _let_member_go(session, user_id)
 
-    was_host = user.is_host
+
+async def _let_member_go(session: "Session", user_id: str) -> None:
+    """Remove a member and tell the room; a host's seat goes to the next one."""
+    was_host = session.users[user_id].is_host
     was_public = session.is_public
     session.remove_user(user_id)
 
@@ -2226,7 +2747,7 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str):
                 del session.websockets[user_id]
         if connection_id in sessions and user_id in session.users and not session.websockets.get(user_id):
             session.pending_disconnects[user_id] = asyncio.create_task(
-                _remove_user_after_grace(connection_id, user_id)
+                _remove_user_after_grace(connection_id, user_id, session.users[user_id].is_host)
             )
 
 

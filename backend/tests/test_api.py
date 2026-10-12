@@ -75,6 +75,150 @@ def test_custom_connection_id_is_honoured_and_validated(client):
         app_module.CONNECTION_ID_LENGTH = len(good)
 
 
+def _enter(client, cid=None, name="Carol"):
+    return client.post("/api/v2/session/enter", json={"connection_id": cid, "user_name": name})
+
+
+def test_enter_joins_a_live_id_and_creates_a_free_one(client):
+    import app as app_module
+
+    created = _enter(client)
+    assert created.status_code == 200, created.text
+    host = created.json()["data"]
+    assert host["is_host"] is True
+
+    joined = _enter(client, host["connection_id"].upper(), name="Dave")
+    assert joined.status_code == 200, joined.text
+    guest = joined.json()["data"]
+    assert guest["connection_id"] == host["connection_id"]
+    assert guest["is_host"] is False
+    # Whose room it was, for the form to say so.
+    assert guest["session_name"] == "Carol"
+
+    free = "q" * app_module.CONNECTION_ID_LENGTH
+    named = _enter(client, free).json()["data"]
+    assert named["connection_id"] == free
+    assert named["is_host"] is True
+
+    # A free ID still has to be one the server would hand out a directory for.
+    assert _enter(client, "../abc").status_code == 400
+
+
+def test_creation_is_rate_limited_per_address_but_joining_is_not(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "CREATE_RATE_LIMIT", 3)
+    monkeypatch.setattr(app_module, "CREATE_RATE_WINDOW_SECONDS", 15)
+
+    hosts = [_create_session(client) for _ in range(3)]
+    r = client.post("/api/v2/session/create", json={})
+    assert r.status_code == 429
+    assert 0 < int(r.headers["retry-after"]) <= 15
+    # The entry form reaches the same create path, so it is held back too...
+    assert _enter(client).status_code == 429
+    # ...but only when it would create: joining is never counted.
+    assert _enter(client, hosts[0]["connection_id"]).status_code == 200
+    _join(client, hosts[1]["connection_id"])
+
+    # Once the oldest creation leaves the window there is room for exactly one.
+    (address,) = app_module.creation_log
+    app_module.creation_log[address][0] -= 15
+    assert _enter(client).status_code == 200
+    assert _enter(client).status_code == 429
+
+
+def test_forwarded_address_is_believed_only_from_the_proxy(monkeypatch):
+    import ipaddress
+
+    from starlette.requests import Request
+
+    import app as app_module
+
+    def address(peer):
+        return app_module.client_address(Request({
+            "type": "http",
+            "client": (peer, 40000),
+            "headers": [(b"x-real-ip", b"203.0.113.9")],
+        }))
+
+    assert address("127.0.0.1") == "203.0.113.9"  # nginx in the same container
+    assert address("::ffff:127.0.0.1") == "203.0.113.9"  # the same, through a dual-stack socket
+    # Anything else is the caller's own claim, a neighbour on the network included.
+    assert address("172.18.0.3") == "172.18.0.3"
+    assert address("8.8.8.8") == "8.8.8.8"
+
+    # A proxy in a container of its own has to be named.
+    monkeypatch.setattr(app_module, "TRUSTED_PROXIES", (ipaddress.ip_network("172.16.0.0/12"),))
+    assert address("172.18.0.3") == "203.0.113.9"
+    assert address("127.0.0.1") == "127.0.0.1"
+
+
+def test_creations_count_per_ipv6_subscriber_not_per_address(client):
+    import app as app_module
+
+    key = app_module.rate_key
+    # One subscriber's /64 is a single bucket; the next /64 is someone else.
+    assert key("2001:db8:1:2:3:4:5:6") == key("2001:db8:1:2:ffff::1") == "2001:db8:1:2::/64"
+    assert key("2001:db8:1:3::1") != key("2001:db8:1:2::1")
+    # An IPv4 caller on a dual-stack socket keeps a bucket of its own.
+    assert key("::ffff:203.0.113.9") == key("203.0.113.9") == "203.0.113.9"
+    assert key("::ffff:203.0.113.9") != key("::ffff:198.51.100.1")
+    assert key("testclient") == "testclient"
+
+    # With the limit off nothing is kept to trim later.
+    assert app_module.CREATE_RATE_LIMIT == 0
+    _create_session(client)
+    _create_session(client)
+    assert app_module.creation_log == {}
+
+
+def _rename(client, member, name):
+    r = client.post("/api/v2/session/rename", json={
+        "connection_id": member["connection_id"], "user_id": member["user_id"], "user_name": name,
+    })
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["user_name"]
+
+
+def test_members_rename_themselves_and_everyone_hears_it(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid, name="Bob")
+
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[host["user_id"]]) as ws:
+        assert _rename(client, guest, "  Robert  ") == "Robert"
+        assert ws.receive_json() == {"type": "user_renamed", "user_id": guest["public_id"], "name": "Robert"}
+
+    # Blank means "never mind", not "make one up".
+    assert _rename(client, guest, "   ") == "Robert"
+    # Taking someone else's name is suffixed like a join; keeping your own is not.
+    assert _rename(client, guest, "Alice") == "Alice(2)"
+    assert _rename(client, guest, "Alice") == "Alice(2)"
+
+    users = client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["users"]
+    assert {u["name"] for u in users} == {"Alice", "Alice(2)"}
+
+    r = client.post("/api/v2/session/rename", json={
+        "connection_id": cid, "user_id": guest["public_id"], "user_name": "Mallory",
+    })
+    assert r.status_code == 403  # the public id is not a credential
+
+
+def test_name_suffixes_stay_within_the_length_cap(client):
+    import app as app_module
+
+    long_name = "x" * app_module.MAX_USER_NAME_LENGTH
+    host = client.post("/api/v2/session/create", json={"user_name": long_name}).json()["data"]
+    cid = host["connection_id"]
+    second = _join(client, cid, name=long_name)["user_name"]
+    third = _join(client, cid, name=long_name)["user_name"]
+    assert second == "x" * 61 + "(2)"
+    assert third == "x" * 61 + "(3)"
+    assert {len(n) for n in (second, third)} == {app_module.MAX_USER_NAME_LENGTH}
+    assert _join(client, cid, name="Sam")["user_name"] == "Sam"
+    assert _join(client, cid, name="Sam")["user_name"] == "Sam(2)"
+
+
 def test_blank_names_do_not_reach_the_lobby(client):
     r = client.post("/api/v2/session/create", json={"user_name": "   "})
     assert r.status_code == 200
@@ -161,17 +305,10 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     assert _public(client) == []
 
     # A guest must not be able to publish someone else's session.
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": guest["user_id"], "is_public": True,
-    })
-    assert r.status_code == 403
+    _publish(client, guest, expect=403)
     assert _public(client) == []
 
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
-    })
-    assert r.status_code == 200
-
+    _publish(client, host)
     listed = _public(client)
     assert [e["connection_id"] for e in listed] == [cid]
     assert listed[0]["name"] == "Alice"
@@ -179,28 +316,28 @@ def test_sessions_are_private_until_the_host_publishes_them(client):
     assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["is_public"] is True
 
     # A guest cannot take it down either.
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": guest["user_id"], "is_public": False,
-    })
-    assert r.status_code == 403
-
-    r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": host["user_id"], "is_public": False,
-    })
-    assert r.status_code == 200
+    _publish(client, guest, False, expect=403)
+    _publish(client, host, False)
     assert _public(client) == []
 
 
-def _publish(client, member, expect=200):
+def _publish(client, member, is_public=True, expect=200):
+    """The padlock: list the room in the lobby, or take it down."""
     r = client.post("/api/v2/session/toggle_public", json={
-        "connection_id": member["connection_id"],
-        "user_id": member["user_id"],
-        "is_public": True,
+        "connection_id": member["connection_id"], "user_id": member["user_id"], "is_public": is_public,
     })
     assert r.status_code == expect, r.text
 
 
-def test_publishing_is_revoked_when_the_host_seat_moves(client):
+def _allow_edit(client, member, allow_edit=True, expect=200):
+    """The pencil: let every member edit, or keep it to the host."""
+    r = client.post("/api/v2/session/toggle_edit", json={
+        "connection_id": member["connection_id"], "user_id": member["user_id"], "allow_edit": allow_edit,
+    })
+    assert r.status_code == expect, r.text
+
+
+def test_publishing_is_revoked_when_the_host_seat_moves(client, monkeypatch):
     """The bug this guards: a 10s network blip handed the host seat to whoever
     joined from the lobby, and the original host could no longer unpublish or
     destroy the room that still carried her name."""
@@ -211,11 +348,12 @@ def test_publishing_is_revoked_when_the_host_seat_moves(client):
     host = _create_session(client)
     cid = host["connection_id"]
     guest = _join(client, cid, name="Mallory")
+    _allow_edit(client, host)
     _publish(client, host)
     assert [e["connection_id"] for e in _public(client)] == [cid]
 
     # Exactly what a dropped socket triggers, without waiting out the grace period.
-    app_module.DISCONNECT_GRACE_SECONDS = 0
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
     asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
 
     session = app_module.sessions[cid]
@@ -224,7 +362,7 @@ def test_publishing_is_revoked_when_the_host_seat_moves(client):
     assert _public(client) == []
 
 
-def test_publishing_is_revoked_when_the_last_member_leaves(client):
+def test_publishing_is_revoked_when_the_last_member_leaves(client, monkeypatch):
     """An abandoned public room had no host token left in existence, so nobody
     could ever unpublish or destroy it — it just sat in the lobby, readable."""
     import asyncio
@@ -233,14 +371,108 @@ def test_publishing_is_revoked_when_the_last_member_leaves(client):
 
     host = _create_session(client)
     cid = host["connection_id"]
+    _allow_edit(client, host)
     _publish(client, host)
 
-    app_module.DISCONNECT_GRACE_SECONDS = 0
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
     asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
 
     assert app_module.sessions[cid].users == {}
     assert app_module.sessions[cid].is_public is False
     assert _public(client) == []
+
+
+def test_a_read_only_room_keeps_its_seat_for_an_absent_host(client, monkeypatch):
+    """Handing the seat on gave the first reader — in a listed room, whoever
+    came in from the lobby — the whole room."""
+    import asyncio
+
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
+    for listed in (True, False):
+        host = _create_session(client)
+        cid = host["connection_id"]
+        reader = _join(client, cid, name="Mallory")
+        _publish(client, host, listed)
+
+        asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+
+        session = app_module.sessions[cid]
+        assert session.users[host["public_id"]].is_host is True
+        assert session.users[reader["public_id"]].is_host is False
+        assert (session.is_public, session.allow_edit) == (listed, False)
+        # The host's own token still opens it, and the reader still only reads.
+        assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).status_code == 200
+        assert set(_writes(client, reader, "-", "-").values()) == {403}
+
+        # Alone in the room makes no difference.
+        asyncio.run(app_module._remove_user_after_grace(cid, reader["public_id"]))
+        asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
+        assert list(session.users) == [host["public_id"]]
+        assert session.is_public is listed
+
+
+def test_a_seat_handed_to_an_absent_member_comes_back(client, monkeypatch):
+    """The seat stayed with whoever it was handed to after they had gone, and
+    a room kept to its host was locked on someone who was not there."""
+    import asyncio
+
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
+    alice = _create_session(client)
+    cid = alice["connection_id"]
+    bob = _join(client, cid, name="Bob")
+    session = app_module.sessions[cid]
+
+    # Bob's socket dropped while he was a plain member; then Alice handed him
+    # the seat.
+    assert client.post("/api/v2/session/transfer_host", json={
+        "connection_id": cid, "current_host_id": alice["user_id"], "new_host_id": bob["public_id"],
+    }).status_code == 200
+    asyncio.run(app_module._remove_user_after_grace(cid, bob["public_id"], dropped_as_host=False))
+    assert bob["public_id"] not in session.users
+    assert session.users[alice["public_id"]].is_host is True
+
+    # A host who drops holding the seat still keeps it.
+    asyncio.run(app_module._remove_user_after_grace(cid, alice["public_id"], dropped_as_host=True))
+    assert session.users[alice["public_id"]].is_host is True
+
+
+def test_leaving_hands_the_seat_on_even_in_a_room_kept_to_its_host(client):
+    """Leave used to be a dropped socket like any other, so a host leaving a
+    room kept to them held the seat until the room idled out."""
+    import app as app_module
+
+    def leave(member):
+        return client.post("/api/v2/session/leave", json={
+            "connection_id": member["connection_id"], "user_id": member["user_id"]})
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid, name="Bob")
+    other = _join(client, cid, name="Carol")
+    _publish(client, host)
+    session = app_module.sessions[cid]
+
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
+        assert leave(host).status_code == 200
+        assert ws.receive_json() == {"type": "user_left", "user_id": host["public_id"]}
+        assert ws.receive_json() == {"type": "host_transferred", "new_host_id": guest["public_id"]}
+        assert ws.receive_json() == {"type": "public_changed", "is_public": False}
+    assert session.users[guest["public_id"]].is_host is True
+    assert _public(client) == []
+    # Gone for good: the old token opens nothing.
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).status_code == 403
+    assert leave(host).status_code == 403
+
+    # A member leaving changes nobody's seat.
+    assert leave(other).status_code == 200
+    assert list(session.users) == [guest["public_id"]]
+    # The last one out leaves an empty room behind.
+    assert leave(guest).status_code == 200
+    assert session.users == {}
 
 
 def test_explicit_host_transfer_also_unpublishes(client):
@@ -268,15 +500,11 @@ def test_lobby_socket_pushes_appearances_and_disappearances(client):
     with client.websocket_connect("/ws/lobby") as ws:
         assert ws.receive_json() == {"type": "public_sessions", "sessions": []}
 
-        client.post("/api/v2/session/toggle_public", json={
-            "connection_id": cid, "user_id": host["user_id"], "is_public": True,
-        })
+        _publish(client, host)
         appeared = ws.receive_json()
         assert [e["connection_id"] for e in appeared["sessions"]] == [cid]
 
-        client.post("/api/v2/session/toggle_public", json={
-            "connection_id": cid, "user_id": host["user_id"], "is_public": False,
-        })
+        _publish(client, host, False)
         assert ws.receive_json()["sessions"] == []
 
 
@@ -286,12 +514,7 @@ def test_public_listing_is_capped_and_newest_first(client):
     created = []
     for _ in range(app_module.MAX_PUBLIC_SESSIONS + 2):
         host = _create_session(client)
-        r = client.post("/api/v2/session/toggle_public", json={
-            "connection_id": host["connection_id"],
-            "user_id": host["user_id"],
-            "is_public": True,
-        })
-        assert r.status_code == 200
+        _publish(client, host)
         created.append(host["connection_id"])
 
     listed = [e["connection_id"] for e in _public(client)]
@@ -305,9 +528,7 @@ def test_public_listing_is_capped_and_newest_first(client):
 def test_destroying_a_public_session_removes_it_from_the_lobby(client):
     host = _create_session(client)
     cid = host["connection_id"]
-    client.post("/api/v2/session/toggle_public", json={
-        "connection_id": cid, "user_id": host["user_id"], "is_public": True,
-    })
+    _publish(client, host)
     assert _public(client)
 
     r = client.post("/api/v2/session/destroy", json={
@@ -412,8 +633,401 @@ def test_curl_upload_rejects_oversized_body(client):
     assert client.post("/api/v2/session/toggle_curl", json={
         "connection_id": cid, "user_id": uid, "allow_curl_upload": True,
     }).status_code == 200
+    _allow_edit(client, host)
 
     import app as app_module
     oversized = b"x" * (app_module.MAX_CURL_UPLOAD_BYTES + 1)
     r = client.post(f"/u/{cid}", content=oversized)
     assert r.status_code == 413
+
+
+def test_curl_uploads_stay_out_of_read_only_rooms(client):
+    """curl carries no member token, so it cannot be the host writing."""
+    host = _create_session(client)
+    cid = host["connection_id"]
+    assert client.post("/api/v2/session/toggle_curl", json={
+        "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": True,
+    }).status_code == 200
+
+    # Kept to the host, which a new room is, listed or not.
+    for listed in (False, True):
+        _publish(client, host, listed)
+        for upload in ({"content": b"hello"}, {"files": {"f": ("a.txt", b"hello")}}):
+            r = client.post(f"/u/{cid}", **upload)
+            assert r.status_code == 403
+            assert r.json()["error"] == "This connection is read-only"
+
+    _allow_edit(client, host)
+    assert client.post(f"/u/{cid}", content=b"hello").status_code == 200
+
+
+def _writes(client, member, block_id, file_block_id):
+    """Status of every content-writing call, made as ``member``."""
+    cid, uid = member["connection_id"], member["user_id"]
+    return {
+        "create": client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": uid, "type": "text", "content": "c"}).status_code,
+        "update": client.patch("/api/v2/block/update", json={
+            "connection_id": cid, "user_id": uid, "block_id": block_id, "content": "u"}).status_code,
+        "upload": client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid},
+                              files={"file": ("a.bin", b"x")}).status_code,
+        "replace": client.post("/api/v2/block/replace",
+                               data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                               files={"file": ("b.bin", b"y")}).status_code,
+        "raw_text": client.post("/api/v2/raw/text", json={
+            "connection_id": cid, "user_id": uid, "block_id": block_id, "content": "p"}).status_code,
+        "raw_file": client.post("/api/v2/raw/file",
+                                data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                                files={"file": ("c.bin", b"z")}).status_code,
+    }
+
+
+def test_only_the_host_writes_until_editing_is_handed_out(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    block_id = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "t",
+    }).json()["data"]["block_id"]
+    file_block_id = client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": host["user_id"]},
+                                files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
+
+    # A new room, private or listed, is the host's to write in.
+    for listed in (False, True):
+        _publish(client, host, listed)
+        assert set(_writes(client, guest, block_id, file_block_id).values()) == {403}, listed
+    r = client.request("DELETE", "/api/v2/block/delete", json={
+        "connection_id": cid, "user_id": guest["user_id"], "block_id": block_id})
+    assert r.status_code == 403
+    # Reading, and renaming yourself, are not writes to the room.
+    assert client.get(f"/api/v2/block/download/{cid}/{block_id}", headers=_auth(guest)).status_code == 200
+    assert _rename(client, guest, "Watcher") == "Watcher"
+    assert set(_writes(client, host, block_id, file_block_id).values()) == {200}
+
+    # Only the host hands editing out, and the room may be listed or not.
+    _allow_edit(client, guest, expect=403)
+    _allow_edit(client, host)
+    for listed in (True, False):
+        _publish(client, host, listed)
+        assert set(_writes(client, guest, block_id, file_block_id).values()) == {200}, listed
+    info = client.get(f"/api/v2/session/{cid}", headers=_auth(guest)).json()["data"]
+    assert (info["is_public"], info["allow_edit"]) == (False, True)
+
+    _allow_edit(client, host, False)
+    assert set(_writes(client, guest, block_id, file_block_id).values()) == {403}
+
+
+def test_writes_that_lose_permission_mid_write_leave_nothing_behind(client, monkeypatch):
+    """Permission was checked only before the bytes went to disk, so a room
+    turned read-only during a slow upload still took the block."""
+    import aiofiles
+
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    block_id = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "t",
+    }).json()["data"]["block_id"]
+    file_block_id = client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": host["user_id"]},
+                                files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
+    assert client.post("/api/v2/session/toggle_curl", json={
+        "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": True,
+    }).status_code == 200
+    session = app_module.sessions[cid]
+
+    def state():
+        raw_dir = app_module.RAW_DIR / cid
+        return (list(session.blocks), dict(session.block_bytes), session.total_bytes,
+                sorted(p.name for p in session.session_dir.iterdir()),
+                sorted(p.name for p in raw_dir.iterdir()) if raw_dir.exists() else [],
+                dict(app_module.raw_links.get(cid, {})))
+
+    before = state()
+
+    # The host locks the room the moment a write starts.
+    real_open = aiofiles.open
+
+    def open_then_lock(*args, **kwargs):
+        session.allow_edit = False
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(aiofiles, "open", open_then_lock)
+    uid = guest["user_id"]
+    writes = {
+        "create": lambda: client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": uid, "type": "text", "content": "c"}),
+        "upload": lambda: client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid},
+                                      files={"file": ("a.bin", b"x")}),
+        "replace": lambda: client.post("/api/v2/block/replace",
+                                       data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                                       files={"file": ("b.bin", b"y")}),
+        "raw_text": lambda: client.post("/api/v2/raw/text", json={
+            "connection_id": cid, "user_id": uid, "block_id": block_id, "content": "p"}),
+        "raw_file": lambda: client.post("/api/v2/raw/file",
+                                        data={"connection_id": cid, "user_id": uid, "block_id": file_block_id},
+                                        files={"file": ("c.bin", b"z")}),
+        "curl_text": lambda: client.post(f"/u/{cid}", content=b"late"),
+        "curl_file": lambda: client.post(f"/u/{cid}", files={"f": ("late.txt", b"late")}),
+    }
+    for name, write in writes.items():
+        session.allow_edit = True
+        assert write().status_code == 403, name
+    assert state() == before
+
+
+def test_writes_racing_a_delete_leave_nothing_behind(client, monkeypatch):
+    """A raw link finished after its block was deleted kept serving the deleted
+    content; a replace finished after it wrote into the trashed block."""
+    import aiofiles
+
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid, uid = host["connection_id"], host["user_id"]
+    session = app_module.sessions[cid]
+
+    def new_block(kind):
+        if kind == "text":
+            return client.post("/api/v2/block/create", json={
+                "connection_id": cid, "user_id": uid, "type": "text", "content": "t"}).json()["data"]["block_id"]
+        return client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid},
+                           files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
+
+    real_open = aiofiles.open
+    victim = {}
+
+    def open_then_delete(*args, **kwargs):
+        if victim.get("id") in session.blocks:
+            session.delete_block(victim["id"])
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(aiofiles, "open", open_then_delete)
+    writes = {
+        "raw_text": ("text", lambda b: client.post("/api/v2/raw/text", json={
+            "connection_id": cid, "user_id": uid, "block_id": b, "content": "p"})),
+        "raw_file": ("file", lambda b: client.post("/api/v2/raw/file",
+                                                   data={"connection_id": cid, "user_id": uid, "block_id": b},
+                                                   files={"file": ("c.bin", b"z")})),
+        "replace": ("file", lambda b: client.post("/api/v2/block/replace",
+                                                  data={"connection_id": cid, "user_id": uid, "block_id": b},
+                                                  files={"file": ("big.bin", b"y" * 1000)})),
+    }
+    for name, (kind, write) in writes.items():
+        monkeypatch.setattr(aiofiles, "open", real_open)
+        block_id = new_block(kind)
+        size = session.block_bytes[block_id]
+        monkeypatch.setattr(aiofiles, "open", open_then_delete)
+        victim["id"] = block_id
+        assert write(block_id).status_code == 404, name
+        assert block_id in session.trash and session.trash[block_id][1] == size, name
+    assert app_module.raw_links.get(cid, {}) == {}
+    assert not list(session.session_dir.glob("*.new"))
+
+
+def test_switches_reach_members_and_only_listing_reaches_the_lobby(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[host["user_id"]]) as ws, \
+            client.websocket_connect("/ws/lobby") as lobby:
+        assert lobby.receive_json()["sessions"] == []
+
+        _publish(client, host)
+        assert ws.receive_json() == {"type": "public_changed", "is_public": True}
+        assert [e["connection_id"] for e in lobby.receive_json()["sessions"]] == [cid]
+
+        # Who may edit is not part of a lobby entry, so the lobby hears
+        # nothing; its next frame is the room going away.
+        _allow_edit(client, host)
+        assert ws.receive_json() == {"type": "edit_permission_changed", "allow_edit": True}
+        _publish(client, host, False)
+        assert ws.receive_json() == {"type": "public_changed", "is_public": False}
+        assert lobby.receive_json()["sessions"] == []
+
+
+def test_snapshots_from_before_the_edit_switch_load_as_they_behaved():
+    import app as app_module
+
+    def restored(**extra):
+        snapshot = {
+            "connection_id": "legacy",
+            "users": {},
+            "last_activity": "2026-08-12T10:00:00",
+            **extra,
+        }
+        session = app_module.Session.from_dict(snapshot)
+        return session.is_public, session.allow_edit
+
+    # Every member could edit then, listed or not.
+    assert restored(is_public=True) == (True, True)
+    assert restored(is_public=False) == (False, True)
+    assert restored() == (False, True)
+    # Dev builds saved one three-way field; listed read-only must stay so.
+    assert restored(visibility="public_read") == (True, False)
+    assert restored(visibility="public_edit") == (True, True)
+    assert restored(visibility="private") == (False, True)
+    # Saved since, both switches come back as they were.
+    fresh = app_module.Session("fresh1", "tok", "uid", "Host")
+    assert (fresh.is_public, fresh.allow_edit) == (False, False)
+    back = app_module.Session.from_dict(json_roundtrip(fresh.to_dict()))
+    assert (back.is_public, back.allow_edit) == (False, False)
+
+
+def test_blocks_move_after_an_anchor_and_the_order_sticks(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    ids = [client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": c,
+    }).json()["data"]["block_id"] for c in ("a", "b", "c")]
+    a, b, c = ids
+
+    def move(member, block_id, after_id):
+        return client.post("/api/v2/block/move", json={
+            "connection_id": cid, "user_id": member["user_id"], "block_id": block_id, "after_id": after_id,
+        })
+
+    def order():
+        blocks = client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["blocks"]
+        return [blk["id"] for blk in blocks]
+
+    _allow_edit(client, host)
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
+        assert move(host, c, None).json()["data"] == {"order": [c, a, b], "version": 1}
+        assert ws.receive_json() == {"type": "blocks_reordered", "order": [c, a, b], "version": 1}
+    assert move(guest, c, b).json()["data"]["version"] == 2
+    assert order() == [a, b, c]
+    # A client reading the session afresh learns where the count stands.
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["order_version"] == 2
+
+    # Bad anchors are refused rather than guessed at.
+    assert move(host, a, a).status_code == 404
+    assert move(host, a, "missing").status_code == 404
+    assert move(host, "missing", None).status_code == 404
+
+    # Reordering is a write: a room kept to its host keeps it to the host.
+    _allow_edit(client, host, False)
+    assert move(guest, a, c).status_code == 403
+    assert move(host, a, c).status_code == 200
+    assert order() == [b, c, a]
+
+
+def test_a_deleted_block_can_be_restored_in_place_until_the_trash_lets_go(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    ids = [client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": c,
+    }).json()["data"]["block_id"] for c in ("a", "b", "c")]
+    a, b, c = ids
+    session = app_module.sessions[cid]
+    text_file = session.session_dir / f"text_block_{b}.txt"
+
+    def delete(block_id):
+        return client.request("DELETE", "/api/v2/block/delete", json={
+            "connection_id": cid, "user_id": host["user_id"], "block_id": block_id})
+
+    def restore(member, block_id):
+        return client.post("/api/v2/block/restore", json={
+            "connection_id": cid, "user_id": member["user_id"], "block_id": block_id})
+
+    def order():
+        blocks = client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["blocks"]
+        return [blk["id"] for blk in blocks]
+
+    assert delete(b).status_code == 200
+    assert order() == [a, c] and text_file.exists()
+    # Restoring is a write, kept to writers like deleting.
+    assert restore(guest, b).status_code == 403
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
+        r = restore(host, b)
+        assert r.status_code == 200
+        assert r.json()["data"]["order"] == [a, b, c]
+        message = ws.receive_json()
+        assert (message["type"], message["block"]["id"], message["order"]) == ("block_restored", b, [a, b, c])
+    assert order() == [a, b, c]
+    assert restore(host, b).status_code == 404  # once only
+
+    # With the block it sat after gone as well, it comes back first.
+    assert delete(b).status_code == 200
+    assert delete(a).status_code == 200
+    assert restore(host, b).json()["data"]["order"] == [b, c]
+
+    # Past the window the trash lets go: files deleted, bytes released.
+    bytes_before = session.total_bytes
+    assert delete(c).status_code == 200
+    assert session.total_bytes == bytes_before
+    session.purge_trash(older_than=0)
+    assert not (session.session_dir / f"text_block_{c}.txt").exists()
+    assert session.total_bytes < bytes_before
+    assert restore(host, c).status_code == 404 and restore(host, a).status_code == 404
+
+
+def test_restoring_respects_the_block_cap(client, monkeypatch):
+    import app as app_module
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    first = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "x",
+    }).json()["data"]["block_id"]
+    client.request("DELETE", "/api/v2/block/delete", json={
+        "connection_id": cid, "user_id": host["user_id"], "block_id": first})
+    for _ in range(app_module.MAX_BLOCKS_PER_SESSION):
+        client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "y"})
+    r = client.post("/api/v2/block/restore", json={
+        "connection_id": cid, "user_id": host["user_id"], "block_id": first})
+    assert r.status_code == 413
+
+
+def test_a_new_block_names_the_save_it_came_from(client):
+    """The page that saved holds its own new block back until its composer has
+    folded, and needs to tell that block from any other it creates meanwhile."""
+    host = _create_session(client)
+    cid, uid = host["connection_id"], host["user_id"]
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[uid]) as ws:
+        client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": uid, "type": "text", "content": "t", "client_ref": "save-1"})
+        assert ws.receive_json()["client_ref"] == "save-1"
+        client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid, "client_ref": "save-2"},
+                    files={"file": ("f.bin", b"f")})
+        assert ws.receive_json()["client_ref"] == "save-2"
+        client.post("/api/v2/block/create", json={"connection_id": cid, "user_id": uid, "type": "text", "content": "u"})
+        assert ws.receive_json()["client_ref"] is None
+    long_ref = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": uid, "type": "text", "content": "v", "client_ref": "x" * 65})
+    assert long_ref.status_code == 422
+
+
+def test_block_order_survives_a_restart():
+    import app as app_module
+
+    session = app_module.Session("orderx", "tok", "uid", "Host")
+    for bid in ("x", "y", "z"):
+        session.add_block(app_module.Block(id=bid, type="text", created_by="uid", created_at="t"))
+    session.move_block("z", None)
+    restored = app_module.Session.from_dict(json_roundtrip(session.to_dict()))
+    assert list(restored.blocks) == ["z", "x", "y"]
+    # A restored room keeps moving and deleting; it once had no move count, and
+    # every read or move of it failed.
+    restored.move_block("y", None)
+    assert (list(restored.blocks), restored.order_version) == (["y", "z", "x"], 1)
+    restored.delete_block("z")
+    assert list(restored.blocks) == ["y", "x"] and "z" in restored.trash
+
+
+def json_roundtrip(data):
+    import json
+
+    return json.loads(json.dumps(data))

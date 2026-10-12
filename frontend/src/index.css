@@ -15,6 +15,7 @@
     --danger-bg: #fef2f2;
     --focus: #0a0a0a;
     --shadow: 0 1px 2px rgba(10, 10, 10, 0.04), 0 4px 12px rgba(10, 10, 10, 0.04);
+    --shadow-lift: 0 2px 4px rgba(10, 10, 10, 0.06), 0 14px 32px rgba(10, 10, 10, 0.14);
 
     --radius: 8px;
     --radius-sm: 6px;
@@ -41,6 +42,7 @@
     --danger-bg: #2a1717;
     --focus: #fafafa;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 6px 16px rgba(0, 0, 0, 0.35);
+    --shadow-lift: 0 2px 6px rgba(0, 0, 0, 0.5), 0 16px 36px rgba(0, 0, 0, 0.55);
 
     --syntax-keyword: #86efac;
     --syntax-string: #fde047;
@@ -58,8 +60,22 @@ html, body, #root {
     min-height: 100vh;
 }
 
+/* No scroll anchoring. A block arriving above the view made the browser
+   scroll to hold whatever it had picked as its anchor still, which shoved the
+   page under an eased move; ruling out the desk alone only moved the anchor
+   to an element around it. Here content moves and the scroll position stays
+   put. */
+html {
+    overflow-anchor: none;
+}
+
+/* Ligatures off everywhere: this is a clipboard, so text must look exactly as
+   typed. JetBrains Mono's contextual alternates drew "// " as a single slash —
+   the first one vanished the moment a space followed it — and fonts with code
+   ligatures rewrite "->", "!=" and the "//" in URLs the same way. */
 body {
     font-family: var(--font-sans);
+    font-variant-ligatures: none;
     font-size: 15px;
     line-height: 1.55;
     color: var(--fg);
@@ -98,11 +114,15 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* The one entrance used across the app: appear, and settle upward. `to` is left
-   off on purpose so it lands on whatever the element's own styles say. */
+   off on purpose so it lands on whatever the element's own styles say.
+
+   It moves `translate`, never `transform`: Motion owns `transform` on the
+   blocks it drags, and a keyframe animation on that same property threw the
+   dragged block a slot ahead of the pointer after every swap. */
 @keyframes rise-in {
     from {
         opacity: 0;
-        transform: translateY(8px);
+        translate: 0 8px;
     }
 }
 
@@ -112,6 +132,20 @@ h1, h2, h3, h4, h5, h6 {
         animation-delay: 0ms !important;
         transition-duration: 1ms !important;
     }
+}
+
+/* The highlight behind the chosen tab. It is one element per tab group that
+   Motion slides between tabs (layoutId); the label sits on top of it. */
+.tab-pill {
+    position: absolute;
+    inset: 0;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+.tab-label {
+    position: relative;
 }
 
 .app-layout {
@@ -180,15 +214,6 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 12px;
     letter-spacing: 0.04em;
     color: var(--fg);
-}
-
-.app-loading {
-    flex: 1;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    color: var(--fg-muted);
-    font-size: 14px;
 }
 
 .app-footer {
@@ -309,3 +334,12 @@ select:focus-visible,
 
 .hljs-strong { font-weight: 600; }
 .hljs-emphasis { font-style: italic; }
+
+/* Lays out a labelled IconButton's icon and text the way the button itself
+   would; see FACE in IconButton. */
+.icon-button-face {
+    display: inherit;
+    align-items: inherit;
+    justify-content: inherit;
+    gap: inherit;
+}

@@ -18,5 +18,8 @@ export function viewTransition(update) {
         apply();
         return;
     }
-    document.startViewTransition(apply);
+    // A transition the browser cannot run — tab hidden, or another one already
+    // under way — is skipped and rejects `ready`. The update still lands, so
+    // there is nothing to report; left unhandled it is console noise.
+    document.startViewTransition(apply)?.ready?.catch(() => {});
 }

@@ -1,8 +1,16 @@
+/* Room to scroll past the last card, so it never sits on the bottom edge,
+   and less of it under an open composer, which brings its own height. */
 .desk {
     display: flex;
     flex-direction: column;
     gap: 24px;
+    padding-bottom: 24vh;
+    transition: padding-bottom 180ms var(--ease);
     animation: rise-in 320ms var(--ease) backwards;
+}
+
+.desk.is-composing {
+    padding-bottom: 12vh;
 }
 
 .desk-head {
@@ -33,6 +41,9 @@
 }
 
 .desk-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     font-size: 22px;
     font-weight: 600;
     letter-spacing: -0.02em;
@@ -80,6 +91,14 @@
     color: var(--fg-subtle);
 }
 
+.desk-status {
+    transition: opacity 160ms var(--ease);
+}
+
+.desk-status.is-pending {
+    opacity: 0;
+}
+
 .desk-menu-btn {
     width: 36px;
     height: 36px;
@@ -104,20 +123,70 @@
     background: var(--fg);
 }
 
+/* Capped here rather than on the name: the row is what an overlong name has
+   to fit, and min-width lets the name shrink into an ellipsis inside it. */
 .desk-user {
     display: inline-flex;
     align-items: center;
     gap: 8px;
     font-size: 14px;
+    max-width: 100%;
+    min-width: 0;
+}
+
+/* Button and input share one box: the padding the input needs for its border
+   is lent to the button too, and both hand it back with a negative margin, so
+   the name does not move when it turns editable. */
+.desk-user-name,
+.desk-user-input {
+    font: inherit;
+    font-weight: 500;
+    color: var(--fg);
+    padding: 2px 6px;
+    margin: -2px -6px;
+    border-radius: 4px;
+    /* No max-width: 100% here. The parent is sized net of the negative margin,
+       so a percentage cap left a lone name 12px short and cut it off. min-width
+       is what lets an overlong one shrink and ellipsize instead. */
+    min-width: 0;
 }
 
 .desk-user-name {
-    font-weight: 500;
-    color: var(--fg);
+    cursor: text;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: background 120ms var(--ease);
 }
 
+.desk-user-name:hover {
+    background: var(--bg-elev);
+}
+
+.desk-user-input {
+    padding: 1px 5px;
+    background: var(--bg-elev);
+    border: 1px solid var(--fg);
+}
+
+/* The border already says where focus is; the global ring would double it. */
+.desk-user-input:focus-visible {
+    outline: none;
+}
+
+/* Below 16px iOS zooms the page in on focus. */
+@media (max-width: 639px) {
+    .desk-user-input {
+        font-size: 16px;
+    }
+}
+
+/* The name gives way to a long name, the tags never do — READ-ONLY would
+   break at its hyphen. */
 .desk-host-tag {
     display: inline-flex;
+    flex: none;
+    white-space: nowrap;
     align-items: center;
     padding: 2px 7px;
     font-size: 11px;
@@ -133,10 +202,19 @@
     display: flex;
 }
 
+/* Relative so AnimatePresence can pop a closing composer out of the flow. */
 .desk-body {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 16px;
+}
+
+.desk-loading {
+    display: flex;
+    justify-content: center;
+    padding: 24px 0;
+    color: var(--fg-subtle);
 }
 
 .desk-count {
@@ -148,10 +226,18 @@
     font-family: var(--font-mono);
 }
 
+/* The list's own trailing space is inside what the frame measures, so the
+   gap to what follows eases with it; the frame hands back the body's gap. */
 .desk-blocks {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 12px;
+    padding-bottom: 16px;
+}
+
+.desk-blocks-frame {
+    margin-bottom: -16px;
 }
 
 .desk-blocks:empty {
@@ -159,7 +245,10 @@
 }
 
 .compose-open {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     width: 100%;
     padding: 22px;
     font-size: 16px;
@@ -176,7 +265,35 @@
     border-color: var(--fg);
 }
 
+.compose-open-key {
+    padding: 1px 7px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.5;
+    color: var(--fg-subtle);
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+}
+
+/* No keyboard to press it with. */
+@media (hover: none) {
+    .compose-open-key {
+        display: none;
+    }
+}
+
+/* AnimatePresence marks whatever it is fading out with data-motion-pop-id.
+   A leaving block must not take clicks meant for what replaces it. A folding
+   composer is kept out of the way by FOLD itself. */
+.block[data-motion-pop-id] {
+    pointer-events: none;
+}
+
 .compose {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -184,7 +301,6 @@
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    animation: rise-in 220ms var(--ease) backwards;
 }
 
 .compose-tabs {
@@ -194,35 +310,18 @@
 }
 
 .compose-tab {
+    position: relative;
     flex: 1;
     padding: 12px 22px;
     font-size: 16px;
     font-weight: 500;
     color: var(--fg-muted);
-    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    transition: color 120ms var(--ease), background 120ms var(--ease), border-color 120ms var(--ease);
+    transition: color 160ms var(--ease);
 }
 
-.compose-tab:hover:not(.is-active) {
-    color: var(--fg);
-}
-
+.compose-tab:hover:not(.is-active),
 .compose-tab.is-active {
-    color: var(--fg);
-    border-color: var(--border-strong);
-    background: var(--bg);
-}
-
-.compose-close {
-    padding: 12px 18px;
-    font-size: 16px;
-    color: var(--fg-subtle);
-    border-radius: var(--radius-sm);
-    transition: color 120ms var(--ease);
-}
-
-.compose-close:hover {
     color: var(--fg);
 }
 
@@ -232,80 +331,20 @@
     gap: 10px;
 }
 
-.compose-text-frame {
-    display: flex;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    transition: border-color 120ms var(--ease);
-    overflow: hidden;
-}
-
-.compose-text-frame:focus-within {
-    border-color: var(--fg);
-}
-
-.compose-gutter {
-    display: flex;
-    flex-direction: column;
-    padding: 16px 16px 16px 18px;
-    font-family: var(--font-mono);
-    font-size: 16px;
-    line-height: 1.6;
-    color: var(--fg-subtle);
-    background: transparent;
-    border-right: 1px solid var(--border);
-    user-select: none;
-    min-width: 56px;
-    text-align: right;
-}
-
-.compose-gutter span {
-    display: block;
-}
-
-.compose-text textarea {
-    flex: 1;
-    padding: 16px 20px;
-    font-family: var(--font-sans);
-    font-size: 20px;
-    line-height: 1.6;
-    color: var(--fg);
-    background: transparent;
-    border: 0;
-    resize: vertical;
-    min-height: 180px;
-}
-
-.compose-text.is-code textarea {
-    font-family: var(--font-mono);
-}
-
-.compose-text textarea::placeholder {
-    color: var(--fg-subtle);
-}
-
-.compose-text textarea:focus {
-    outline: none;
-}
-
-@media (max-width: 639px) {
-    .compose-text textarea {
-        font-size: 16px;
-    }
-}
-
 .compose-foot {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
     gap: 12px;
 }
 
 .compose-stats {
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
+    min-width: 0;
     font-size: 15px;
     font-family: var(--font-mono);
     color: var(--fg-subtle);
@@ -315,15 +354,45 @@
     color: var(--border-strong);
 }
 
-.compose-lang select {
-    font-family: var(--font-mono);
-    font-size: 15px;
+.compose-lang {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* On a phone the picker wraps to a line of its own, where a leading dot
+   separates it from nothing. */
+@media (max-width: 639px) {
+    .compose-lang .compose-dot {
+        display: none;
+    }
+}
+
+.compose-actions {
+    display: flex;
+    gap: 10px;
+    margin-left: auto;
+}
+
+.compose-cancel {
+    padding: 14px 22px;
+    font-size: 16px;
+    font-weight: 500;
     color: var(--fg-muted);
     background: transparent;
     border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 9px 14px;
-    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: color 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.compose-cancel:hover:not(:disabled) {
+    color: var(--fg);
+    border-color: var(--fg);
+}
+
+.compose-cancel:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 .compose-submit {
@@ -384,6 +453,10 @@
 }
 
 .compose-drop-idle {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
     font-size: 16px;
     color: var(--fg-muted);
 }
@@ -425,6 +498,9 @@
 }
 
 .desk-drop-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 18px 26px;
     font-size: 15px;
     font-weight: 500;

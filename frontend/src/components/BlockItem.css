@@ -3,6 +3,7 @@
    sweep, not a slideshow. `backwards` keeps the block hidden during its delay
    instead of flashing in at full opacity first. */
 .block {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -11,6 +12,10 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     transition: border-color 120ms var(--ease);
+}
+
+/* Present only until the entrance ends; see isEntering in BlockItem. */
+.block.is-entering {
     animation: rise-in 260ms var(--ease) backwards;
     animation-delay: min(calc(var(--i, 0) * 35ms), 245ms);
 }
@@ -19,11 +24,90 @@
     border-color: var(--border-strong);
 }
 
+/* Lifted while it is carried and until it has settled. !important because
+   Motion writes z-index inline, and drops it to unset whenever the block's
+   offset passes zero — mid-drag after a swap, and through the final snap —
+   which let the neighbours paint over the block in hand. */
+.block.is-dragging {
+    z-index: 2 !important;
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-lift);
+}
+
+.block.has-handle {
+    padding-right: 52px;
+}
+
+.block-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-subtle);
+    border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    transition: color 120ms var(--ease), background 120ms var(--ease);
+}
+
+.block-handle:hover,
+.block.is-dragging .block-handle {
+    color: var(--fg);
+    background: var(--bg);
+}
+
+.block.is-dragging .block-handle {
+    cursor: grabbing;
+}
+
 .block-head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
+}
+
+/* The block's place in the list, in small type tucked into the top-left
+   corner. It is cut from the border's own colour and laid over it, so it
+   reads as the border running into the corner; its corner follows the card's,
+   so nothing pokes outside. */
+.block-mark {
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    display: inline-flex;
+    padding: 3px 7px 3px 8px;
+    border-radius: var(--radius) 0 var(--radius-sm) 0;
+    background: var(--border);
+    color: var(--fg-muted);
+    font: 500 10px/1.2 var(--font-mono);
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    transition: background 120ms var(--ease);
+}
+
+.block:hover .block-mark {
+    background: var(--border-strong);
+}
+
+/* One digit tall and clipped, so the rest of the strip waits out of sight. */
+.block-mark-digit {
+    display: inline-block;
+    height: 1.2em;
+    overflow: hidden;
+}
+
+.block-mark-reel,
+.block-mark-reel > span {
+    display: block;
 }
 
 .block-title {
@@ -38,6 +122,7 @@
 }
 
 .block-meta {
+    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -159,100 +244,31 @@
     gap: 10px;
 }
 
+/* Wraps rather than overflows: on a phone the language picker drops to its
+   own line instead of pushing out past the card's edge. */
 .block-edit-tabs {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
 }
 
 .block-edit-tab {
+    position: relative;
     padding: 12px 22px;
     font-size: 16px;
     color: var(--fg-muted);
-    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    transition: color 120ms var(--ease), border-color 120ms var(--ease);
+    transition: color 160ms var(--ease);
 }
 
-.block-edit-tab:hover:not(.is-active) {
-    color: var(--fg);
-}
-
+.block-edit-tab:hover:not(.is-active),
 .block-edit-tab.is-active {
     color: var(--fg);
-    border-color: var(--border-strong);
 }
 
 .block-edit-lang {
-    font-family: var(--font-mono);
-    font-size: 15px;
-    color: var(--fg-muted);
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 9px 14px;
-    cursor: pointer;
     margin-left: auto;
-    color-scheme: light dark;
-}
-
-.block-edit-lang option {
-    background: var(--bg-elev);
-    color: var(--fg);
-}
-
-.block-edit-frame {
-    display: flex;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-    transition: border-color 120ms var(--ease);
-}
-
-.block-edit-frame:focus-within {
-    border-color: var(--fg);
-}
-
-.block-edit-gutter {
-    display: flex;
-    flex-direction: column;
-    padding: 16px 16px 16px 18px;
-    font-family: var(--font-mono);
-    font-size: 16px;
-    line-height: 1.6;
-    color: var(--fg-subtle);
-    border-right: 1px solid var(--border);
-    text-align: right;
-    user-select: none;
-    min-width: 56px;
-}
-
-.block-edit-input {
-    flex: 1;
-    padding: 16px 20px;
-    font-family: var(--font-sans);
-    font-size: 20px;
-    line-height: 1.6;
-    color: var(--fg);
-    background: transparent;
-    border: 0;
-    resize: vertical;
-    min-height: 180px;
-}
-
-.block-edit-input.is-code {
-    font-family: var(--font-mono);
-}
-
-.block-edit-input:focus {
-    outline: none;
-}
-
-@media (max-width: 639px) {
-    .block-edit-input {
-        font-size: 16px;
-    }
 }
 
 .block-edit-foot {

@@ -3,12 +3,15 @@ import { ToastContainer } from '../components/Toast';
 
 const ToastContext = createContext(null);
 
+// Past this many, the oldest makes way as the next arrives.
+const MAX_TOASTS = 4;
+
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
 
   const addToast = useCallback((message, type = 'info', duration = 3000) => {
     const id = Date.now() + Math.random();
-    setToasts((prev) => [...prev, { id, message, type, duration }]);
+    setToasts((prev) => [...prev, { id, message, type, duration }].slice(-MAX_TOASTS));
     return id;
   }, []);
 

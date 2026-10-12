@@ -59,4 +59,15 @@ export default [
             'no-unused-vars': ['warn', {argsIgnorePattern: '^_'}],
         },
     },
+    {
+        // Vendored from Animate UI and kept line for line with upstream, whose
+        // code predates these React Compiler rules. Fixing them here would make
+        // every future upstream update a merge instead of a copy.
+        files: ['src/components/animate-ui/**'],
+        rules: {
+            'react-hooks/set-state-in-effect': 'off',
+            'react-hooks/refs': 'off',
+            'react-hooks/static-components': 'off',
+        },
+    },
 ];

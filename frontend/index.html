@@ -14,6 +14,13 @@
 	     (poor fit for a self-hosted clipboard) and break air-gapped installs.
 	     --font-sans / --font-mono in index.css still prefer Inter and JetBrains
 	     Mono when installed locally, and fall back to system faces otherwise. -->
+	<!-- Painted before any stylesheet or script: without it a refresh flashed the
+	     browser's white canvas until the app's CSS arrived, which in dev only
+	     happens once the JS has run. Mirrors --bg in src/index.css. -->
+	<style>
+		html { background: #f0f0f0; color-scheme: light; }
+		html[data-theme="dark"] { background: #1c1c1f; color-scheme: dark; }
+	</style>
 	<script>
 		(function () {
 			try {

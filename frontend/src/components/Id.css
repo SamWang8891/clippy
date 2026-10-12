@@ -16,6 +16,68 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--bg-elev);
+    cursor: pointer;
+    position: relative;
+}
+
+/* Laid over the chip's border: solid when pressed, running back round the
+   edge over --reveal until only the gray border is left. */
+.id-code-ring {
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    width: calc(100% + 2px);
+    height: calc(100% + 2px);
+    overflow: visible;
+    pointer-events: none;
+}
+
+.id-code-ring rect {
+    x: 1px;
+    y: 1px;
+    width: calc(100% - 2px);
+    height: calc(100% - 2px);
+    rx: 3px;
+    fill: none;
+    stroke: var(--fg);
+    stroke-width: 2px;
+    stroke-dasharray: 100;
+    animation: id-ring var(--reveal) linear forwards;
+}
+
+@keyframes id-ring {
+    to { stroke-dashoffset: 100; }
+}
+
+/* A timer, not decoration: it keeps its pace when motion is turned down,
+   over the blanket rule in index.css. */
+@media (prefers-reduced-motion: reduce) {
+    .id-code-ring rect {
+        animation-duration: var(--reveal) !important;
+    }
+}
+
+/* Only the characters cloud over; the chip around them stays sharp. They
+   clear at once and cloud over slowly, so a reveal running out fades rather
+   than snapping shut. */
+.id-code-text {
+    display: inline-block;
+    filter: blur(5px);
+    transition: filter 1.6s var(--ease);
+}
+
+.id-code.is-revealed .id-code-text {
+    filter: none;
+    transition-duration: 150ms;
+}
+
+/* A tap leaves :hover stuck on until the next tap elsewhere, which would
+   outlast the twenty seconds; touch screens go by the press alone. */
+@media (hover: hover) {
+    .id-code:hover .id-code-text {
+        filter: none;
+        transition-duration: 150ms;
+    }
 }
 
 .id-btn {
@@ -40,11 +102,15 @@
     cursor: default;
 }
 
-/* Public is the loud state: an unlocked room is worth noticing at a glance.
-   Listed alongside the hover rule so state, not the cursor, decides the colour
-   — the plain .id-btn:hover selector is the more specific of the two. */
-.id-btn.is-public,
-.id-btn.is-public:hover:not(:disabled) {
+/* Open is the loud state: a listed room, or one anyone can edit, is worth
+   noticing at a glance. Listed alongside the hover rule so state, not the
+   cursor, decides the colour — the plain .id-btn:hover selector is the more
+   specific of the two. */
+.id-switch {
+    transition: color 160ms var(--ease), border-color 160ms var(--ease), background 160ms var(--ease);
+}
+.id-switch.is-open,
+.id-switch.is-open:hover:not(:disabled) {
     color: var(--accent-live);
     border-color: var(--accent-live);
 }

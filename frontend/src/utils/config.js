@@ -7,11 +7,26 @@
  */
 
 let backendUrl = null;
+let pending = null;
 
 /**
- * Initialize configuration. Returns the resolved backend URL.
+ * Resolve the backend URL once; every later call gets the same promise.
  */
-export async function initConfig() {
+export function initConfig() {
+    pending ??= resolveBackendUrl();
+    return pending;
+}
+
+/**
+ * Settles once the backend URL is known. Anything that talks to the backend
+ * awaits this rather than the page waiting for it, so the UI can draw at once
+ * and only the parts that need the network hold back.
+ */
+export function configReady() {
+    return initConfig();
+}
+
+async function resolveBackendUrl() {
     const candidates = [
         '/config.json',
         import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/config.json` : null,

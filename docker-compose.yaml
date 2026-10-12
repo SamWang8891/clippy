@@ -10,6 +10,10 @@ services:
       - ./docker/backend:/app
     env_file:
       - ./docker/backend/.env
+    environment:
+      # nginx has a container of its own here and reaches the app over
+      # clippy_net, which nothing else is on.
+      TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
     expose:
       - "8123"
     networks:

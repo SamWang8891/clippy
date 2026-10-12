@@ -1,4 +1,5 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {AnimatePresence, Reorder, motion, useDragControls} from 'motion/react';
 import hljs from 'highlight.js/lib/common';
 import powershell from 'highlight.js/lib/languages/powershell';
 hljs.registerLanguage('powershell', powershell);
@@ -6,50 +7,21 @@ import {useToast} from '../context/ToastContext';
 import {decrypt, decryptToBytes} from '../utils/encryption';
 import {fetchBlockCiphertext, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock, parseBlockContent} from '../utils/codeBlock';
+import {formatClock} from '../utils/time';
+import {LinedTextarea} from './LinedTextarea';
+import {Select} from './Select';
+import {IconButton} from './IconButton';
+import {Copy} from './animate-ui/icons/copy';
+import {Download} from './animate-ui/icons/download';
+import {GripVertical} from './animate-ui/icons/grip-vertical';
+import {AnimateIcon} from './animate-ui/icons/icon';
+import {Link} from './animate-ui/icons/link';
+import {Pen} from './animate-ui/icons/pen';
+import {RefreshCcw} from './animate-ui/icons/refresh-ccw';
+import {Trash2} from './animate-ui/icons/trash-2';
 import './BlockItem.css';
 
 const CODE_SIGNATURE = /[{};=]|=>|->|^\s*(import|from|const|let|var|def|func|class|function|return|if|for|while|public|private|export)\b|\n\s{2,}\S/m;
-
-const IconCopy = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <rect x="5" y="5" width="8" height="9" rx="1.5" />
-        <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-5A1.5 1.5 0 0 0 3 3.5v7A1.5 1.5 0 0 0 4.5 12H5" />
-    </svg>
-);
-
-const IconEdit = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M11.2 2.8a1.6 1.6 0 0 1 2.3 2.3L5.5 13.1l-3 .7.7-3L11.2 2.8z" />
-    </svg>
-);
-
-const IconTrash = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M2.5 4.5h11M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4 4.5l.7 8.3a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.3" />
-        <path d="M6.75 7.25v4M9.25 7.25v4" />
-    </svg>
-);
-
-const IconDownload = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M8 2.5v8M4.5 7l3.5 3.5L11.5 7" />
-        <path d="M2.75 12.5v.75a1 1 0 0 0 1 1h8.5a1 1 0 0 0 1-1v-.75" />
-    </svg>
-);
-
-const IconReplace = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M3 6.5A4.5 4.5 0 0 1 11 4M13 9.5A4.5 4.5 0 0 1 5 12" />
-        <path d="M11 2v2.5h-2.5M5 14v-2.5h2.5" />
-    </svg>
-);
-
-const IconRaw = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M6.5 9.5a3 3 0 0 0 4.2.4l2-2a3 3 0 0 0-4.2-4.2L7.2 5" />
-        <path d="M9.5 6.5a3 3 0 0 0-4.2-.4l-2 2a3 3 0 0 0 4.2 4.2L8.8 11" />
-    </svg>
-);
 
 // Uploads are stored as opaque ciphertext with no content type, so the file
 // name is all there is to go on — and a Blob needs a real type or the browser
@@ -124,14 +96,66 @@ function formatTime(iso) {
     const d = new Date(iso);
     const now = new Date();
     const sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) {
-        return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-    }
-    return d.toLocaleDateString([], {month: 'short', day: '2-digit'}) + ' ' +
-        d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    if (sameDay) return formatClock(d);
+    return d.toLocaleDateString([], {month: 'short', day: '2-digit'}) + ' ' + formatClock(d);
 }
 
-export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateText, onReplaceFile}) {
+const CAN_HOVER = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(hover: hover)').matches);
+// Quick and settled rather than springy: a reorder should read as a snap.
+const SLIDE = {duration: 0.16, ease: [0.2, 0, 0, 1]};
+const SETTLE = {bounceStiffness: 900, bounceDamping: 60};
+
+// Digits turn like an odometer's: each column is a strip of 0 to 9 that slides
+// to the digit it shows — up as the number grows, down as it shrinks. A strip
+// that only moves keeps rolling through a reorder; a digit swapped for another
+// lost its exit whenever the block's node was moved, so it blinked instead.
+// ponytail: 9 to 0 spins back through the strip rather than wrapping on.
+const ROLL = {duration: 0.26, ease: [0.2, 0, 0, 1]};
+const REEL = [...'0123456789'];
+
+/**
+ * The block's place in the list, in the card's top-left corner. Hidden from
+ * assistive tech: the list's own order already says it.
+ */
+function BlockMark({n}) {
+    const digits = String(n).padStart(2, '0');
+    return (
+        <span className="block-mark" aria-hidden="true">
+            {[...digits].map((digit, i) => (
+                // Keyed by place from the right, so 99 to 100 keeps the ones
+                // and tens turning in their own columns.
+                <span key={digits.length - i} className="block-mark-digit">
+                    <motion.span
+                        className="block-mark-reel"
+                        initial={false}
+                        animate={{y: `${-10 * Number(digit)}%`}}
+                        transition={ROLL}
+                    >
+                        {REEL.map((d) => <span key={d}>{d}</span>)}
+                    </motion.span>
+                </span>
+            ))}
+        </span>
+    );
+}
+
+// canEdit off means a read-only room: copying and downloading stay, and every
+// control that writes is gone — raw links included, since each one is a copy
+// counted against the session's storage. Reordering is a write too.
+export function BlockItem({
+    ref,
+    block,
+    index,
+    sessionId,
+    userId,
+    canEdit = true,
+    onDelete,
+    onUpdateText,
+    onReplaceFile,
+    onDragStart,
+    onDragEnd,
+    onMoveBy,
+}) {
     const [decryptedContent, setDecryptedContent] = useState('');
     const [isDecrypting, setIsDecrypting] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -145,6 +169,25 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
     const [isPreviewVisible, setIsPreviewVisible] = useState(false);
     const articleRef = useRef(null);
     const fileInputRef = useRef(null);
+    const handleRef = useRef(null);
+    const editInputRef = useRef(null);
+    const dragControls = useDragControls();
+    // From pickup until it has settled into its slot, not just while held:
+    // the drop's snap and the neighbours' slide overlap it otherwise.
+    const [isLifted, setIsLifted] = useState(false);
+    // The entrance runs once and is then taken off. Moving a block down
+    // re-inserts its node, and a re-inserted node restarts its CSS
+    // animations — the block blinked out and faded back in on every move.
+    const [isEntering, setIsEntering] = useState(true);
+    const canReorder = canEdit && Boolean(onMoveBy);
+
+    // AnimatePresence hands a ref down to measure a block on its way out; the
+    // preview observer needs the same element.
+    const setArticle = useCallback((node) => {
+        articleRef.current = node;
+        if (typeof ref === 'function') ref(node);
+        else if (ref) ref.current = node;
+    }, [ref]);
     const toast = useToast();
 
     useEffect(() => {
@@ -265,6 +308,12 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
         setIsEditing(true);
     };
 
+    // Text/Code and the language picker are buttons; give the keyboard back
+    // to the editor after either, or the next keystrokes land on the button.
+    useEffect(() => {
+        if (isEditing) editInputRef.current?.focus();
+    }, [isEditing, editMode]);
+
     const handleCancelEdit = () => {
         setIsEditing(false);
         setEditValue('');
@@ -329,15 +378,6 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
     };
 
     const handleEditKeyDown = (e) => {
-        if (editMode === 'code' && e.key === 'Tab') {
-            e.preventDefault();
-            const {selectionStart, selectionEnd, value} = e.target;
-            const next = value.substring(0, selectionStart) + '  ' + value.substring(selectionEnd);
-            setEditValue(next);
-            requestAnimationFrame(() => {
-                e.target.selectionStart = e.target.selectionEnd = selectionStart + 2;
-            });
-        }
         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault();
             handleSaveEdit();
@@ -348,24 +388,53 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
         }
     };
 
-    const editLineCount = Math.max(1, editValue.split('\n').length);
+    // Arrow keys move a block one place, for anyone not dragging with a pointer.
+    // Focus is put back afterwards: moving a block down re-inserts its node,
+    // and a re-inserted node drops focus.
+    const handleHandleKeyDown = (e) => {
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        onMoveBy(block.id, e.key === 'ArrowUp' ? -1 : 1);
+        requestAnimationFrame(() => handleRef.current?.focus());
+    };
+
     const timestamp = formatTime(block.created_at);
 
-    const title = block.type === 'file'
-        ? (block.original_filename || block.filename || 'file')
-        : rendered ? `code · ${rendered.language}` : 'text';
+    // Only a file has a name worth a heading; text and code speak for themselves.
+    const fileName = block.type === 'file' ? (block.original_filename || block.filename || 'file') : null;
 
     return (
-        // --i staggers the entrance down the list. The view-transition name is
-        // what lets a deletion animate: the browser keeps a snapshot of this
-        // block to fade out while the ones below slide up into its place.
-        <article
-            className="block"
-            ref={articleRef}
-            style={{'--i': index, viewTransitionName: `block-${block.id}`}}
+        // --i staggers the CSS entrance down the list. Motion owns the rest:
+        // dragging only from the handle, sliding neighbours into new places
+        // (position only, so text never stretches mid-move), and the fade out.
+        <Reorder.Item
+            as="article"
+            value={block.id}
+            ref={setArticle}
+            className={`block ${isEntering ? 'is-entering' : ''} ${canReorder ? 'has-handle' : ''} ${isLifted ? 'is-dragging' : ''}`}
+            style={{'--i': index}}
+            onAnimationEnd={(e) => {
+                if (e.target === e.currentTarget) setIsEntering(false);
+            }}
+            layout="position"
+            transition={SLIDE}
+            // No scale while carried: a block dropped lower down kept it,
+            // stuck a percent too wide. The shadow does the lifting.
+            dragListener={false}
+            dragControls={dragControls}
+            dragMomentum={false}
+            dragTransition={SETTLE}
+            exit={{opacity: 0, scale: 0.98, transition: {duration: 0.15}}}
+            onDragStart={() => {
+                setIsLifted(true);
+                onDragStart?.(block.id);
+            }}
+            onDragEnd={() => onDragEnd?.(block.id)}
+            onDragTransitionEnd={() => setIsLifted(false)}
         >
             <header className="block-head">
-                <span className="block-title" title={title}>{title}</span>
+                <BlockMark n={index + 1} />
+                {fileName && <span className="block-title" title={fileName}>{fileName}</span>}
                 <span className="block-meta">
                     {block.created_by === '__curl__' && (
                         <>
@@ -391,43 +460,53 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                                 {id: 'text', label: 'Text'},
                                 {id: 'code', label: 'Code'},
                             ].map((opt) => (
-                                <button
+                                <motion.button
                                     key={opt.id}
                                     type="button"
                                     className={`block-edit-tab ${editMode === opt.id ? 'is-active' : ''}`}
+                                    // Keeps focus in the editor; see the effect above.
+                                    onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => setEditMode(opt.id)}
+                                    whileTap={{scale: 0.97}}
                                 >
-                                    {opt.label}
-                                </button>
+                                    {editMode === opt.id && (
+                                        <motion.span layoutId={`edit-tab-${block.id}`} className="tab-pill" transition={SLIDE} />
+                                    )}
+                                    <span className="tab-label">{opt.label}</span>
+                                </motion.button>
                             ))}
-                            {editMode === 'code' && (
-                                <select
-                                    className="block-edit-lang"
-                                    value={editLanguage}
-                                    onChange={(e) => setEditLanguage(e.target.value)}
-                                >
-                                    {SUPPORTED_LANGUAGES.map((l) => (
-                                        <option key={l.id} value={l.id}>{l.label}</option>
-                                    ))}
-                                </select>
-                            )}
+                            <AnimatePresence initial={false}>
+                                {editMode === 'code' && (
+                                    <motion.div
+                                        key="language"
+                                        className="block-edit-lang"
+                                        initial={{opacity: 0, x: 6}}
+                                        animate={{opacity: 1, x: 0}}
+                                        exit={{opacity: 0, x: 6}}
+                                        transition={SLIDE}
+                                    >
+                                        <Select
+                                            value={editLanguage}
+                                            options={SUPPORTED_LANGUAGES}
+                                            onChange={(next) => {
+                                                setEditLanguage(next);
+                                                editInputRef.current?.focus();
+                                            }}
+                                            label="Language"
+                                        />
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
                         </div>
-                        <div className="block-edit-frame">
-                            <div className="block-edit-gutter" aria-hidden="true">
-                                {Array.from({length: Math.max(6, editLineCount)}, (_, i) => (
-                                    <span key={i}>{String(i + 1).padStart(2, '0')}</span>
-                                ))}
-                            </div>
-                            <textarea
-                                className={`block-edit-input ${editMode === 'code' ? 'is-code' : ''}`}
-                                value={editValue}
-                                onChange={(e) => setEditValue(e.target.value)}
-                                onKeyDown={handleEditKeyDown}
-                                autoFocus
-                                spellCheck="false"
-                                rows={Math.min(20, Math.max(4, editLineCount))}
-                            />
-                        </div>
+                        <LinedTextarea
+                            inputRef={editInputRef}
+                            value={editValue}
+                            onChange={setEditValue}
+                            code={editMode === 'code'}
+                            onKeyDown={handleEditKeyDown}
+                            aria-label={editMode === 'code' ? 'Code' : 'Text'}
+                            autoFocus
+                        />
                         <div className="block-edit-foot">
                             <span className="block-edit-hint">⌘/Ctrl + ↵ save · Esc cancel</span>
                             <div className="block-edit-buttons">
@@ -472,7 +551,7 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                     /* An <img> never executes script, so an uploaded SVG stays
                        inert here. Deliberately not a link to the blob: opening
                        one as a document would run it on this origin. */
-                    <img className="block-thumb" src={previewUrl} alt={title} />
+                    <img className="block-thumb" src={previewUrl} alt={fileName} />
                 ) : null}
             </div>
 
@@ -480,71 +559,64 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                 <div className="block-actions">
                     {block.type === 'text' && !isDecrypting && (
                         <>
-                            <button
-                                type="button"
+                            <IconButton
+                                icon={Copy}
                                 onClick={handleCopy}
                                 className="block-action"
                                 aria-label="Copy"
                                 title="Copy"
-                            >
-                                <IconCopy />
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleGetRawLink}
-                                className="block-action"
-                                disabled={isGeneratingRaw}
-                                aria-label="Raw link"
-                                title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
-                            >
-                                <IconRaw />
-                            </button>
-                            {onUpdateText && (
-                                <button
-                                    type="button"
+                            />
+                            {canEdit && (
+                                <IconButton
+                                    icon={Link}
+                                    onClick={handleGetRawLink}
+                                    className="block-action"
+                                    disabled={isGeneratingRaw}
+                                    aria-label="Raw link"
+                                    title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
+                                />
+                            )}
+                            {canEdit && onUpdateText && (
+                                <IconButton
+                                    icon={Pen}
                                     onClick={handleStartEdit}
                                     className="block-action"
                                     aria-label="Edit"
                                     title="Edit"
-                                >
-                                    <IconEdit />
-                                </button>
+                                />
                             )}
                         </>
                     )}
                     {block.type === 'file' && (
                         <>
-                            <button
-                                type="button"
+                            <IconButton
+                                icon={Download}
                                 onClick={handleDownload}
                                 className="block-action"
                                 aria-label="Download"
                                 title="Download"
-                            >
-                                <IconDownload />
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleGetRawLink}
-                                className="block-action"
-                                disabled={isGeneratingRaw}
-                                aria-label="Raw link"
-                                title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
-                            >
-                                <IconRaw />
-                            </button>
-                            {onReplaceFile && (
+                            />
+                            {canEdit && (
+                                <IconButton
+                                    icon={Link}
+                                    onClick={handleGetRawLink}
+                                    className="block-action"
+                                    disabled={isGeneratingRaw}
+                                    aria-label="Raw link"
+                                    title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
+                                />
+                            )}
+                            {canEdit && onReplaceFile && (
                                 <>
-                                    <button
-                                        type="button"
+                                    <IconButton
+                                        icon={RefreshCcw}
+                                        animation="rotate"
                                         onClick={handlePickReplacement}
                                         className="block-action"
                                         disabled={isReplacing}
                                         aria-label={isReplacing ? 'Uploading' : 'Replace'}
                                         title={isReplacing ? 'Uploading…' : 'Replace'}
-                                    >
-                                        <IconReplace />
-                                    </button>
+                                    />
                                     <input
                                         ref={fileInputRef}
                                         type="file"
@@ -555,17 +627,36 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                             )}
                         </>
                     )}
-                    <button
-                        type="button"
-                        onClick={() => onDelete(block.id)}
-                        className="block-action is-danger"
-                        aria-label="Delete"
-                        title="Delete"
-                    >
-                        <IconTrash />
-                    </button>
+                    {canEdit && (
+                        <IconButton
+                            icon={Trash2}
+                            onClick={() => onDelete(block.id)}
+                            className="block-action is-danger"
+                            aria-label="Delete"
+                            title="Delete"
+                        />
+                    )}
                 </div>
             )}
-        </article>
+            {canReorder && (
+                // The whole right edge is the grip, so it is easy to find with
+                // a thumb; touch-action stops it from scrolling the page.
+                <AnimateIcon asChild animate={isLifted} animateOnHover={CAN_HOVER}>
+                    <button
+                        ref={handleRef}
+                        type="button"
+                        className="block-handle"
+                        onPointerDown={(e) => {
+                            if (e.button === 0) dragControls.start(e);
+                        }}
+                        onKeyDown={handleHandleKeyDown}
+                        aria-label="Reorder"
+                        title="Drag to reorder"
+                    >
+                        <GripVertical size={18} aria-hidden="true" />
+                    </button>
+                </AnimateIcon>
+            )}
+        </Reorder.Item>
     );
 }
