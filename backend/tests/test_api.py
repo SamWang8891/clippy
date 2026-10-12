@@ -300,7 +300,7 @@ def _publish(client, member, expect=200):
     assert r.status_code == expect, r.text
 
 
-def test_publishing_is_revoked_when_the_host_seat_moves(client):
+def test_publishing_is_revoked_when_the_host_seat_moves(client, monkeypatch):
     """The bug this guards: a 10s network blip handed the host seat to whoever
     joined from the lobby, and the original host could no longer unpublish or
     destroy the room that still carried her name."""
@@ -315,7 +315,7 @@ def test_publishing_is_revoked_when_the_host_seat_moves(client):
     assert [e["connection_id"] for e in _public(client)] == [cid]
 
     # Exactly what a dropped socket triggers, without waiting out the grace period.
-    app_module.DISCONNECT_GRACE_SECONDS = 0
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
     asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
 
     session = app_module.sessions[cid]
@@ -324,7 +324,7 @@ def test_publishing_is_revoked_when_the_host_seat_moves(client):
     assert _public(client) == []
 
 
-def test_publishing_is_revoked_when_the_last_member_leaves(client):
+def test_publishing_is_revoked_when_the_last_member_leaves(client, monkeypatch):
     """An abandoned public room had no host token left in existence, so nobody
     could ever unpublish or destroy it — it just sat in the lobby, readable."""
     import asyncio
@@ -335,7 +335,7 @@ def test_publishing_is_revoked_when_the_last_member_leaves(client):
     cid = host["connection_id"]
     _publish(client, host)
 
-    app_module.DISCONNECT_GRACE_SECONDS = 0
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
     asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
 
     assert app_module.sessions[cid].users == {}
