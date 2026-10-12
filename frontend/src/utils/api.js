@@ -284,6 +284,19 @@ export async function moveBlock(sessionId, userId, blockId, afterId) {
     return handleApiResponse(response);
 }
 
+export async function restoreBlock(sessionId, userId, blockId) {
+    const response = await fetch(`${await getApiBase()}/block/restore`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            block_id: blockId,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
 export async function deleteBlock(sessionId, userId, blockId) {
     const response = await fetch(`${await getApiBase()}/block/delete`, {
         method: 'DELETE',

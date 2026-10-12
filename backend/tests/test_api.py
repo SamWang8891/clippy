@@ -802,6 +802,78 @@ def test_blocks_move_after_an_anchor_and_the_order_sticks(client):
     assert order() == [b, c, a]
 
 
+def test_a_deleted_block_can_be_restored_in_place_until_the_trash_lets_go(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid)
+    ids = [client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": c,
+    }).json()["data"]["block_id"] for c in ("a", "b", "c")]
+    a, b, c = ids
+    session = app_module.sessions[cid]
+    text_file = session.session_dir / f"text_block_{b}.txt"
+
+    def delete(block_id):
+        return client.request("DELETE", "/api/v2/block/delete", json={
+            "connection_id": cid, "user_id": host["user_id"], "block_id": block_id})
+
+    def restore(member, block_id):
+        return client.post("/api/v2/block/restore", json={
+            "connection_id": cid, "user_id": member["user_id"], "block_id": block_id})
+
+    def order():
+        blocks = client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["blocks"]
+        return [blk["id"] for blk in blocks]
+
+    assert delete(b).status_code == 200
+    assert order() == [a, c] and text_file.exists()
+    # Restoring is a write, kept to writers like deleting.
+    assert restore(guest, b).status_code == 403
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
+        r = restore(host, b)
+        assert r.status_code == 200
+        assert r.json()["data"]["order"] == [a, b, c]
+        message = ws.receive_json()
+        assert (message["type"], message["block"]["id"], message["order"]) == ("block_restored", b, [a, b, c])
+    assert order() == [a, b, c]
+    assert restore(host, b).status_code == 404  # once only
+
+    # With the block it sat after gone as well, it comes back first.
+    assert delete(b).status_code == 200
+    assert delete(a).status_code == 200
+    assert restore(host, b).json()["data"]["order"] == [b, c]
+
+    # Past the window the trash lets go: files deleted, bytes released.
+    bytes_before = session.total_bytes
+    assert delete(c).status_code == 200
+    assert session.total_bytes == bytes_before
+    session.purge_trash(older_than=0)
+    assert not (session.session_dir / f"text_block_{c}.txt").exists()
+    assert session.total_bytes < bytes_before
+    assert restore(host, c).status_code == 404 and restore(host, a).status_code == 404
+
+
+def test_restoring_respects_the_block_cap(client, monkeypatch):
+    import app as app_module
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    first = client.post("/api/v2/block/create", json={
+        "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "x",
+    }).json()["data"]["block_id"]
+    client.request("DELETE", "/api/v2/block/delete", json={
+        "connection_id": cid, "user_id": host["user_id"], "block_id": first})
+    for _ in range(app_module.MAX_BLOCKS_PER_SESSION):
+        client.post("/api/v2/block/create", json={
+            "connection_id": cid, "user_id": host["user_id"], "type": "text", "content": "y"})
+    r = client.post("/api/v2/block/restore", json={
+        "connection_id": cid, "user_id": host["user_id"], "block_id": first})
+    assert r.status_code == 413
+
+
 def test_block_order_survives_a_restart():
     import app as app_module
 
@@ -811,10 +883,12 @@ def test_block_order_survives_a_restart():
     session.move_block("z", None)
     restored = app_module.Session.from_dict(json_roundtrip(session.to_dict()))
     assert list(restored.blocks) == ["z", "x", "y"]
-    # A restored room keeps moving; it once had no move count and every read
-    # or move of it failed.
+    # A restored room keeps moving and deleting; it once had no move count, and
+    # every read or move of it failed.
     restored.move_block("y", None)
     assert (list(restored.blocks), restored.order_version) == (["y", "z", "x"], 1)
+    restored.delete_block("z")
+    assert list(restored.blocks) == ["y", "x"] and "z" in restored.trash
 
 
 def json_roundtrip(data):

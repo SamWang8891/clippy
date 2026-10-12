@@ -4,6 +4,7 @@ import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useWebSocket} from '../hooks/useWebSocket';
+import {useUndo} from '../hooks/useUndo';
 import {
     createTextBlock,
     deleteBlock,
@@ -11,12 +12,13 @@ import {
     moveBlock,
     renameSelf,
     replaceFileBlock,
+    restoreBlock,
     toggleSessionEdit,
     toggleSessionPublic,
     updateTextBlock,
     uploadFileBlock,
 } from '../utils/api';
-import {clearSessionKey, setSessionKeyFromConnectionId} from '../utils/encryption';
+import {clearSessionKey, decrypt, setSessionKeyFromConnectionId} from '../utils/encryption';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
 import {LinedTextarea} from './LinedTextarea';
@@ -29,6 +31,7 @@ import {Upload} from './animate-ui/icons/upload';
 import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
+import {UndoBar} from './UndoBar';
 import {storeName} from './SessionEntry';
 import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
 import './ClipboardInterface.css';
@@ -51,6 +54,12 @@ const anchorOf = (ids, id) => ids[ids.indexOf(id) - 1] ?? null;
 function centerInView(node) {
     const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     node?.scrollIntoView({behavior: still ? 'auto' : 'smooth', block: 'center'});
+}
+
+// The blocks with a restored one back among them, in `order` when given.
+function withRestored(blocks, block, order) {
+    const all = blocks.some((b) => b.id === block.id) ? blocks : [...blocks, block];
+    return order ? applyOrder(all, order) : all;
 }
 
 // Keep `heard` if it is newer than the order in `ref`, by the server's move
@@ -111,6 +120,7 @@ export function ClipboardInterface() {
     // press started a step behind.
     const pendingMovesRef = useRef(0);
     const newestOrderRef = useRef({version: 0, order: null});
+    const undo = useUndo();
     useEffect(() => {
         blocksRef.current = blocks;
     }, [blocks]);
@@ -239,6 +249,14 @@ export function ClipboardInterface() {
             case 'block_updated':
                 setBlocks((prev) => prev.map((b) => b.id === message.block.id ? message.block : b));
                 break;
+
+            case 'block_restored': {
+                // Back in its place in one step, unless moves of ours are out.
+                noteOrder(newestOrderRef, message);
+                const order = pendingMovesRef.current === 0 ? newestOrderRef.current.order : null;
+                setBlocks((prev) => withRestored(prev, message.block, order));
+                break;
+            }
 
             case 'host_transferred':
                 setUsers((prev) => prev.map((u) => ({...u, is_host: u.id === message.new_host_id})));
@@ -428,13 +446,18 @@ export function ClipboardInterface() {
         }
     };
 
+    // The bar below says it and offers it back, so there is no toast as well.
     const handleUpdateText = async (blockId, content) => {
+        const before = blocksRef.current.find((b) => b.id === blockId)?.content;
         try {
             await updateTextBlock(sessionData.connection_id, sessionData.user_id, blockId, content);
-            toast.success('Updated');
         } catch (err) {
             toast.error('Failed to update: ' + err.message);
             throw err;
+        }
+        if (before) {
+            undo.record('Updated', async () => updateTextBlock(
+                sessionData.connection_id, sessionData.user_id, blockId, await decrypt(before)));
         }
     };
 
@@ -575,11 +598,15 @@ export function ClipboardInterface() {
 
     // The order is shown at once. When the last move in flight lands, the
     // newest order the server has told of is shown: ours, unless someone else
-    // moved something meanwhile. A refused move reloads the server's.
-    const persistMove = async (blockId, afterId) => {
+    // moved something meanwhile. A refused move reloads the server's. A move
+    // the user made can be taken back to `from`, the block it sat after; one
+    // that takes something back cannot.
+    const persistMove = async (blockId, afterId, from) => {
         pendingMovesRef.current += 1;
+        let moved = false;
         try {
             noteOrder(newestOrderRef, await moveBlock(sessionData.connection_id, sessionData.user_id, blockId, afterId));
+            moved = true;
         } catch (err) {
             toast.error('Failed to move: ' + err.message);
             loadSession();
@@ -588,6 +615,15 @@ export function ClipboardInterface() {
         }
         const {order} = newestOrderRef.current;
         if (pendingMovesRef.current === 0 && order) setBlocks((prev) => applyOrder(prev, order));
+        if (moved && from !== undefined) undo.record('Moved', () => placeBlock(blockId, from));
+    };
+
+    // Puts a block straight after `afterId`, or first, as a step back does.
+    const placeBlock = (blockId, afterId) => {
+        const next = blocksRef.current.map((b) => b.id).filter((id) => id !== blockId);
+        next.splice(afterId ? next.indexOf(afterId) + 1 : 0, 0, blockId);
+        setBlocks((prev) => applyOrder(prev, next));
+        return persistMove(blockId, afterId);
     };
 
     // Reorder calls this on every swap mid-drag; only the drop is sent.
@@ -599,7 +635,7 @@ export function ClipboardInterface() {
 
     const handleDragEnd = (blockId) => {
         const anchor = anchorOf(blocksRef.current.map((b) => b.id), blockId);
-        if (anchor !== dragAnchorRef.current) persistMove(blockId, anchor);
+        if (anchor !== dragAnchorRef.current) persistMove(blockId, anchor, dragAnchorRef.current);
     };
 
     const handleMoveBy = (blockId, delta) => {
@@ -609,17 +645,49 @@ export function ClipboardInterface() {
         const next = ids.filter((id) => id !== blockId);
         next.splice(to, 0, blockId);
         setBlocks((prev) => applyOrder(prev, next));
-        persistMove(blockId, anchorOf(next, blockId));
+        persistMove(blockId, anchorOf(next, blockId), anchorOf(ids, blockId));
     };
 
     const handleDeleteBlock = async (blockId) => {
         try {
             await deleteBlock(sessionData.connection_id, sessionData.user_id, blockId);
-            toast.success('Deleted');
         } catch (err) {
             toast.error('Failed to delete: ' + err.message);
+            return;
+        }
+        undo.record('Deleted', async () => {
+            const data = await restoreBlock(sessionData.connection_id, sessionData.user_id, blockId);
+            noteOrder(newestOrderRef, data);
+            setBlocks((prev) => withRestored(prev, data.block, pendingMovesRef.current === 0 ? data.order : null));
+        });
+    };
+
+    // One step back: the newest change undone, and the clock held so the
+    // next press can follow.
+    const stepBack = async () => {
+        const step = undo.takeBack();
+        if (!step) return;
+        try {
+            await step.undo();
+        } catch (err) {
+            toast.error('Failed to undo: ' + err.message);
         }
     };
+
+    // Cmd/Ctrl+Z outside a field steps back; a field keeps its own undo, and
+    // a question on screen comes first. Held down, it does not run away.
+    useEffect(() => {
+        const onKeyDown = (e) => {
+            if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key?.toLowerCase() !== 'z') return;
+            if (e.repeat || e.isComposing || !canEdit || !undo.step) return;
+            if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+            if (document.querySelector('.confirm-dialog')) return;
+            e.preventDefault();
+            stepBack();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    });
 
     const handleTogglePublic = async () => {
         const next = !session?.is_public;
@@ -870,6 +938,8 @@ export function ClipboardInterface() {
                     </div>
                 </div>
             )}
+
+            {canEdit && <UndoBar step={undo.step} onUndo={stepBack} />}
 
             {notification && <Notification text={notification}/>}
         </div>

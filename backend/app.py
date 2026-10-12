@@ -93,6 +93,10 @@ TRUSTED_PROXIES = tuple(
 
 # Member names, as the entry and rename fields also cap them (maxLength).
 MAX_USER_NAME_LENGTH = 64
+# A deleted block waits this long, files and all, for an undo before it is gone
+# for good. The page offers undo for ten seconds, held a while longer as the
+# user steps back through several; this outlasts that with room to spare.
+TRASH_SECONDS = 120
 
 # Wire-format constant, NOT an API version: it is baked into the key derivation
 # and must byte-match KDF_PREFIX in frontend/src/utils/encryption.js. Changing it
@@ -273,6 +277,12 @@ class DeleteBlockRequest(BaseModel):
     block_id: str = Field(min_length=1, max_length=64)
 
 
+class RestoreBlockRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    block_id: str = Field(min_length=1, max_length=64)
+
+
 class MoveBlockRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
@@ -387,6 +397,12 @@ class Session:
         # clients read it afresh with the session when they reconnect.
         self.order_version = 0
         self.block_bytes: dict[str, int] = {}  # block_id -> byte size on disk
+        # Deleted blocks still open to an undo: id -> (block, byte size, the
+        # block it sat after, when it went). Their files stay on disk and their
+        # bytes stay counted until purge_trash lets them go.
+        # ponytail: not saved with the session, so a restart forgets them and
+        # leaves their files to go with the session's directory.
+        self.trash: dict[str, tuple[Block, int, str | None, float]] = {}
         self.total_bytes = 0
         # Bytes promised to in-flight uploads that have not yet been committed,
         # so concurrent uploads can't all size themselves off the same baseline.
@@ -537,21 +553,38 @@ class Session:
         self.update_activity()
 
     def delete_block(self, block_id: str):
-        """Delete a block, its files, and any raw links exposing its content."""
+        """Take a block out of the session, into the trash for a while.
+
+        Its raw links go at once: they serve *decrypted* content, and leaving
+        one alive keeps publishing data the user believes they deleted.
+        """
         if block_id in self.blocks:
-            block = self.blocks[block_id]
-            if block.type == "file" and block.filename:
-                file_path = self.session_dir / block.filename
-                file_path.unlink(missing_ok=True)
-            elif block.type == "text":
-                text_file = self.session_dir / f"text_block_{block_id}.txt"
-                text_file.unlink(missing_ok=True)
-            del self.blocks[block_id]
-            self.total_bytes -= self.block_bytes.pop(block_id, 0)
-        # A raw link serves *decrypted* content, so leaving it alive after the
-        # block is gone keeps publishing data the user believes they deleted.
+            ids = list(self.blocks)
+            at = ids.index(block_id)
+            block = self.blocks.pop(block_id)
+            size = self.block_bytes.pop(block_id, 0)
+            self.trash[block_id] = (block, size, ids[at - 1] if at else None, time.monotonic())
         purge_raw_links_for_block(self.connection_id, block_id)
         self.update_activity()
+
+    def restore_block(self, block_id: str) -> None:
+        """Put a trashed block back after the block it sat after, or first
+        when that one has gone too."""
+        block, size, after_id, _ = self.trash.pop(block_id)
+        self.blocks[block_id] = block
+        self.block_bytes[block_id] = size
+        self.move_block(block_id, after_id if after_id in self.blocks else None)
+
+    def purge_trash(self, older_than: float = TRASH_SECONDS) -> None:
+        """Let trashed blocks past their undo go for good, files and bytes."""
+        now = time.monotonic()
+        for block_id in [b for b, (*_, gone_at) in self.trash.items() if now - gone_at >= older_than]:
+            block, size, _, _ = self.trash.pop(block_id)
+            if block.type == "file" and block.filename:
+                (self.session_dir / block.filename).unlink(missing_ok=True)
+            elif block.type == "text":
+                (self.session_dir / f"text_block_{block_id}.txt").unlink(missing_ok=True)
+            self.total_bytes -= size
 
     async def broadcast(self, message: dict, exclude_user: str | None = None):
         """
@@ -601,6 +634,7 @@ class Session:
         }
         instance.blocks = {bid: Block(**b) for bid, b in data.get("blocks", {}).items()}
         instance.order_version = 0  # see __init__: counted afresh after a restart
+        instance.trash = {}  # see __init__: not saved
         instance.block_bytes = dict(data.get("block_bytes", {}))
         instance.total_bytes = sum(instance.block_bytes.values())
         instance.reserved_bytes = 0
@@ -1091,6 +1125,8 @@ async def cleanup_expired_sessions():
         expired = [sid for sid, session in sessions.items() if session.is_expired()]
         for sid in expired:
             await _teardown_session(sid, "timeout")
+        for session in sessions.values():
+            session.purge_trash()
 
         now = datetime.now()
         stale = [
@@ -2065,6 +2101,45 @@ async def delete_block(request: DeleteBlockRequest):
         "Block deleted",
         {"success": True}
     )
+
+
+@router.post(
+    "/block/restore",
+    summary="Restore Block",
+    description="Undo a recent delete, putting the block back where it was"
+)
+async def restore_block(request: RestoreBlockRequest):
+    """
+    Bring back a block deleted within TRASH_SECONDS. Writers only, as deleting
+    is. Everyone receives the block with the whole new order, in one message,
+    so it appears in its place rather than at the end first.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+
+    denied = edit_denied(session, request.user_id)
+    if denied is not None:
+        return denied
+
+    if request.block_id not in session.trash:
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
+    if len(session.blocks) >= MAX_BLOCKS_PER_SESSION:
+        return api_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"Block limit reached ({MAX_BLOCKS_PER_SESSION})")
+
+    session.restore_block(request.block_id)
+    restored = {
+        "block": session.blocks[request.block_id].model_dump(),
+        "order": list(session.blocks),
+        "version": session.order_version,
+    }
+
+    await session.broadcast({"type": "block_restored", **restored})
+
+    return api_response(HTTPStatus.OK, "Block restored", restored)
 
 
 @router.get(
