@@ -11,11 +11,14 @@ export function ConfirmDialog({
   onCancel
 }) {
   const confirmRef = useRef(null);
+  const dialogRef = useRef(null);
   const id = useId();
 
   // Opens on the action it was asked for, so Enter carries it out and the
   // choice is visible at a glance; Esc and the backdrop back out. Focus goes
-  // back where it came from once the dialog is gone.
+  // back where it came from once the dialog is gone. Tab goes round the two
+  // answers: walking off into the page behind could open a second question
+  // over this one.
   useEffect(() => {
     const previous = document.activeElement;
     confirmRef.current?.focus();
@@ -23,6 +26,11 @@ export function ConfirmDialog({
       if (e.key === 'Escape') {
         e.preventDefault();
         onCancel();
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        const buttons = [...dialogRef.current.querySelectorAll('button')];
+        const at = buttons.indexOf(document.activeElement);
+        buttons[(at + (e.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -36,6 +44,7 @@ export function ConfirmDialog({
     <>
       <div className="confirm-overlay" onClick={onCancel} />
       <div
+        ref={dialogRef}
         className="confirm-dialog"
         role="alertdialog"
         aria-modal="true"

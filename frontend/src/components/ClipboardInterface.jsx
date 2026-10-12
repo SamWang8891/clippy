@@ -360,8 +360,12 @@ export function ClipboardInterface() {
             if (discard) {
                 closeComposer();
             } else {
-                // After the dialog has handed focus back, not before.
-                requestAnimationFrame(() => composeRef.current?.querySelector('textarea, input[type="file"]')?.focus());
+                // After the dialog has handed focus back, not before — and not
+                // at all if another question has taken its place.
+                requestAnimationFrame(() => {
+                    if (document.querySelector('.confirm-dialog')) return;
+                    composeRef.current?.querySelector('textarea, input[type="file"]')?.focus();
+                });
             }
         };
         const onClick = (e) => {

@@ -1,23 +1,28 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 
 const ConfirmContext = createContext(null);
 
 export function ConfirmProvider({ children }) {
   const [dialog, setDialog] = useState(null);
+  // Answers the question on screen. A second question used to replace the
+  // first without answering it, and whatever awaited the first never resumed.
+  const answerRef = useRef(null);
 
   const confirm = useCallback((options) => {
+    answerRef.current?.(false);
     return new Promise((resolve) => {
+      const answer = (yes) => {
+        if (answerRef.current !== answer) return;  // already answered
+        answerRef.current = null;
+        setDialog(null);
+        resolve(yes);
+      };
+      answerRef.current = answer;
       setDialog({
         ...options,
-        onConfirm: () => {
-          setDialog(null);
-          resolve(true);
-        },
-        onCancel: () => {
-          setDialog(null);
-          resolve(false);
-        },
+        onConfirm: () => answer(true),
+        onCancel: () => answer(false),
       });
     });
   }, []);
