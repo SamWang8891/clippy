@@ -640,10 +640,13 @@ class Session:
         instance.reserved_bytes = 0
         instance.allow_join = data.get("allow_join", True)
         instance.allow_curl_upload = data.get("allow_curl_upload", False)
-        instance.is_public = data.get("is_public", False)
         # Rooms saved before editing could be kept to the host let every member
-        # edit, so that is what they come back as.
-        instance.allow_edit = data.get("allow_edit", True)
+        # edit, so that is what they come back as. Dev builds briefly saved one
+        # three-way `visibility` instead; a room saved listed read-only must not
+        # come back open to edits.
+        legacy = data.get("visibility")
+        instance.is_public = data.get("is_public", legacy in ("public_read", "public_edit"))
+        instance.allow_edit = data.get("allow_edit", legacy != "public_read")
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
         # Snapshots written before created_at existed fall back to the last
         # activity rather than "now", which would reshuffle the lobby on restart.
@@ -941,7 +944,11 @@ def client_address(request: Request) -> str:
     peer = request.client.host if request.client else ""
     forwarded = request.headers.get("x-real-ip", "").strip()
     try:
-        from_proxy = any(ipaddress.ip_address(peer) in net for net in TRUSTED_PROXIES)
+        ip = ipaddress.ip_address(peer)
+        # A dual-stack socket reports an IPv4 hop as ::ffff:a.b.c.d.
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        from_proxy = any(ip in net for net in TRUSTED_PROXIES)
     except ValueError:
         from_proxy = False
     return forwarded if forwarded and from_proxy else peer
@@ -1993,6 +2000,9 @@ async def replace_file_block(
     if denied is not None:
         tmp_path.unlink(missing_ok=True)
         return denied
+    if session.blocks.get(block_id) is not block:  # deleted while the file came in
+        tmp_path.unlink(missing_ok=True)
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
     if old_filename and old_filename != safe_filename:
         (session.session_dir / old_filename).unlink(missing_ok=True)
@@ -2240,6 +2250,11 @@ async def create_raw_text_link(request: CreateRawTextRequest):
     if denied is not None:
         (raw_dir / filename).unlink(missing_ok=True)
         return denied
+    # Deleted while the copy was written: its links have been purged already,
+    # and this one would serve the deleted content for its whole TTL.
+    if request.block_id not in session.blocks:
+        (raw_dir / filename).unlink(missing_ok=True)
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
     now = datetime.now()
     link = RawLink(
@@ -2342,6 +2357,9 @@ async def create_raw_file_link(
     if denied is not None:
         file_path.unlink(missing_ok=True)
         return denied
+    if block_id not in session.blocks:  # deleted meanwhile; see the text link
+        file_path.unlink(missing_ok=True)
+        return api_response(HTTPStatus.NOT_FOUND, "Block not found")
 
     now = datetime.now()
     link = RawLink(
@@ -2544,13 +2562,16 @@ async def curl_upload(connection_id: str, request: Request):
         return JSONResponse(status_code=200, content={"ok": True, "id": block_id})
 
 
-async def _remove_user_after_grace(connection_id: str, user_id: str):
+async def _remove_user_after_grace(connection_id: str, user_id: str, dropped_as_host: bool | None = None):
     """
     Wait for the grace period, then evict the user if they haven't reconnected.
 
     If the host leaves and other users remain, host privileges are auto-transferred
     so the session keeps a host and the remaining users can still manage it —
-    except in a room only its host may edit, which keeps the seat for them.
+    except in a room only its host may edit, which keeps the seat for a host
+    who dropped while holding it. ``dropped_as_host`` says whether they did;
+    None reads it now. Someone handed the seat while already away is let go
+    as usual, or the room would be locked on a member who is not there.
     """
     try:
         await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
@@ -2567,7 +2588,8 @@ async def _remove_user_after_grace(connection_id: str, user_id: str):
     # whoever wandered in from the lobby — and the seat would hand the first of
     # them the whole room. So it stays as its host left it, and their token
     # still opens it when they come back.
-    if user.is_host and not session.allow_edit:
+    held_seat = user.is_host if dropped_as_host is None else dropped_as_host
+    if user.is_host and held_seat and not session.allow_edit:
         return
 
     was_host = user.is_host
@@ -2685,7 +2707,7 @@ async def websocket_endpoint(websocket: WebSocket, connection_id: str):
                 del session.websockets[user_id]
         if connection_id in sessions and user_id in session.users and not session.websockets.get(user_id):
             session.pending_disconnects[user_id] = asyncio.create_task(
-                _remove_user_after_grace(connection_id, user_id)
+                _remove_user_after_grace(connection_id, user_id, session.users[user_id].is_host)
             )
 
 

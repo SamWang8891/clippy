@@ -142,6 +142,7 @@ def test_forwarded_address_is_believed_only_from_the_proxy(monkeypatch):
         }))
 
     assert address("127.0.0.1") == "203.0.113.9"  # nginx in the same container
+    assert address("::ffff:127.0.0.1") == "203.0.113.9"  # the same, through a dual-stack socket
     # Anything else is the caller's own claim, a neighbour on the network included.
     assert address("172.18.0.3") == "172.18.0.3"
     assert address("8.8.8.8") == "8.8.8.8"
@@ -410,6 +411,33 @@ def test_a_read_only_room_keeps_its_seat_for_an_absent_host(client, monkeypatch)
         asyncio.run(app_module._remove_user_after_grace(cid, host["public_id"]))
         assert list(session.users) == [host["public_id"]]
         assert session.is_public is listed
+
+
+def test_a_seat_handed_to_an_absent_member_comes_back(client, monkeypatch):
+    """The seat stayed with whoever it was handed to after they had gone, and
+    a room kept to its host was locked on someone who was not there."""
+    import asyncio
+
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "DISCONNECT_GRACE_SECONDS", 0)
+    alice = _create_session(client)
+    cid = alice["connection_id"]
+    bob = _join(client, cid, name="Bob")
+    session = app_module.sessions[cid]
+
+    # Bob's socket dropped while he was a plain member; then Alice handed him
+    # the seat.
+    assert client.post("/api/v2/session/transfer_host", json={
+        "connection_id": cid, "current_host_id": alice["user_id"], "new_host_id": bob["public_id"],
+    }).status_code == 200
+    asyncio.run(app_module._remove_user_after_grace(cid, bob["public_id"], dropped_as_host=False))
+    assert bob["public_id"] not in session.users
+    assert session.users[alice["public_id"]].is_host is True
+
+    # A host who drops holding the seat still keeps it.
+    asyncio.run(app_module._remove_user_after_grace(cid, alice["public_id"], dropped_as_host=True))
+    assert session.users[alice["public_id"]].is_host is True
 
 
 def test_explicit_host_transfer_also_unpublishes(client):
@@ -718,6 +746,56 @@ def test_writes_that_lose_permission_mid_write_leave_nothing_behind(client, monk
     assert state() == before
 
 
+def test_writes_racing_a_delete_leave_nothing_behind(client, monkeypatch):
+    """A raw link finished after its block was deleted kept serving the deleted
+    content; a replace finished after it wrote into the trashed block."""
+    import aiofiles
+
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
+    host = _create_session(client)
+    cid, uid = host["connection_id"], host["user_id"]
+    session = app_module.sessions[cid]
+
+    def new_block(kind):
+        if kind == "text":
+            return client.post("/api/v2/block/create", json={
+                "connection_id": cid, "user_id": uid, "type": "text", "content": "t"}).json()["data"]["block_id"]
+        return client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": uid},
+                           files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
+
+    real_open = aiofiles.open
+    victim = {}
+
+    def open_then_delete(*args, **kwargs):
+        if victim.get("id") in session.blocks:
+            session.delete_block(victim["id"])
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(aiofiles, "open", open_then_delete)
+    writes = {
+        "raw_text": ("text", lambda b: client.post("/api/v2/raw/text", json={
+            "connection_id": cid, "user_id": uid, "block_id": b, "content": "p"})),
+        "raw_file": ("file", lambda b: client.post("/api/v2/raw/file",
+                                                   data={"connection_id": cid, "user_id": uid, "block_id": b},
+                                                   files={"file": ("c.bin", b"z")})),
+        "replace": ("file", lambda b: client.post("/api/v2/block/replace",
+                                                  data={"connection_id": cid, "user_id": uid, "block_id": b},
+                                                  files={"file": ("big.bin", b"y" * 1000)})),
+    }
+    for name, (kind, write) in writes.items():
+        monkeypatch.setattr(aiofiles, "open", real_open)
+        block_id = new_block(kind)
+        size = session.block_bytes[block_id]
+        monkeypatch.setattr(aiofiles, "open", open_then_delete)
+        victim["id"] = block_id
+        assert write(block_id).status_code == 404, name
+        assert block_id in session.trash and session.trash[block_id][1] == size, name
+    assert app_module.raw_links.get(cid, {}) == {}
+    assert not list(session.session_dir.glob("*.new"))
+
+
 def test_switches_reach_members_and_only_listing_reaches_the_lobby(client):
     host = _create_session(client)
     cid = host["connection_id"]
@@ -756,6 +834,10 @@ def test_snapshots_from_before_the_edit_switch_load_as_they_behaved():
     assert restored(is_public=True) == (True, True)
     assert restored(is_public=False) == (False, True)
     assert restored() == (False, True)
+    # Dev builds saved one three-way field; listed read-only must stay so.
+    assert restored(visibility="public_read") == (True, False)
+    assert restored(visibility="public_edit") == (True, True)
+    assert restored(visibility="private") == (False, True)
     # Saved since, both switches come back as they were.
     fresh = app_module.Session("fresh1", "tok", "uid", "Host")
     assert (fresh.is_public, fresh.allow_edit) == (False, False)
