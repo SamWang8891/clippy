@@ -7,6 +7,7 @@ import {useToast} from '../context/ToastContext';
 import {decrypt, decryptToBytes} from '../utils/encryption';
 import {fetchBlockCiphertext, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock, parseBlockContent} from '../utils/codeBlock';
+import {formatClock} from '../utils/time';
 import {LinedTextarea} from './LinedTextarea';
 import {Select} from './Select';
 import {IconButton} from './IconButton';
@@ -95,11 +96,8 @@ function formatTime(iso) {
     const d = new Date(iso);
     const now = new Date();
     const sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) {
-        return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-    }
-    return d.toLocaleDateString([], {month: 'short', day: '2-digit'}) + ' ' +
-        d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    if (sameDay) return formatClock(d);
+    return d.toLocaleDateString([], {month: 'short', day: '2-digit'}) + ' ' + formatClock(d);
 }
 
 const CAN_HOVER = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(hover: hover)').matches);

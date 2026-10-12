@@ -1,6 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {getPublicSessions} from '../utils/api';
 import {getWebSocketUrl} from '../utils/config';
+import {formatClock} from '../utils/time';
 import './PublicSessions.css';
 
 const RECONNECT_MS = 3000;
@@ -85,7 +86,7 @@ function useTick(intervalMs) {
 
 function formatCreated(iso) {
     const date = new Date(iso);
-    const time = date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    const time = formatClock(date);
     if (date.toDateString() === new Date().toDateString()) return time;
     return `${date.toLocaleDateString([], {month: 'short', day: '2-digit'})} ${time}`;
 }
