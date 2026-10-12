@@ -8,7 +8,9 @@ import {useUndo} from '../hooks/useUndo';
 import {
     createTextBlock,
     deleteBlock,
+    destroySession,
     getSession,
+    leaveSession,
     moveBlock,
     renameSelf,
     replaceFileBlock,
@@ -820,19 +822,34 @@ export function ClipboardInterface() {
         }
     };
 
+    // The host may end the room for everyone here instead of leaving it.
     const handleLogoClick = async () => {
-        const confirmed = await confirm({
+        const choice = await confirm({
             title: 'Leave connection',
             message: 'Are you sure you want to leave? You will need the connection ID to rejoin.',
             confirmText: 'Leave',
             cancelText: 'Stay',
-            confirmStyle: 'danger'
+            confirmStyle: 'danger',
+            ...(currentUser?.is_host && {extraText: 'Destroy'}),
         });
+        if (!choice) return;
 
+        try {
+            if (choice === 'extra') await destroySession(sessionData.connection_id, sessionData.user_id);
+            // Said out loud, or a host's seat would wait out a dropped
+            // socket's grace — and in a room kept to its host, never move.
+            else await leaveSession(sessionData.connection_id, sessionData.user_id);
+        } catch (err) {
+            if (choice === 'extra') {
+                toast.error('Failed to destroy connection: ' + err.message);
+                return;
+            }
+            console.error('Leave was not heard; the server will see the socket go:', err);
+        }
         // goHome, not pushState: leaving used to push a history entry, so Back
         // returned to /<id> — and now that the path decides what is open, that
         // silently rejoined the connection the user had just left.
-        if (confirmed) goHome();
+        goHome();
     };
 
     const countLabel = blocks.length === 0

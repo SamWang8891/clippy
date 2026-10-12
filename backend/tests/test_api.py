@@ -440,6 +440,41 @@ def test_a_seat_handed_to_an_absent_member_comes_back(client, monkeypatch):
     assert session.users[alice["public_id"]].is_host is True
 
 
+def test_leaving_hands_the_seat_on_even_in_a_room_kept_to_its_host(client):
+    """Leave used to be a dropped socket like any other, so a host leaving a
+    room kept to them held the seat until the room idled out."""
+    import app as app_module
+
+    def leave(member):
+        return client.post("/api/v2/session/leave", json={
+            "connection_id": member["connection_id"], "user_id": member["user_id"]})
+
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid, name="Bob")
+    other = _join(client, cid, name="Carol")
+    _publish(client, host)
+    session = app_module.sessions[cid]
+
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
+        assert leave(host).status_code == 200
+        assert ws.receive_json() == {"type": "user_left", "user_id": host["public_id"]}
+        assert ws.receive_json() == {"type": "host_transferred", "new_host_id": guest["public_id"]}
+        assert ws.receive_json() == {"type": "public_changed", "is_public": False}
+    assert session.users[guest["public_id"]].is_host is True
+    assert _public(client) == []
+    # Gone for good: the old token opens nothing.
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).status_code == 403
+    assert leave(host).status_code == 403
+
+    # A member leaving changes nobody's seat.
+    assert leave(other).status_code == 200
+    assert list(session.users) == [guest["public_id"]]
+    # The last one out leaves an empty room behind.
+    assert leave(guest).status_code == 200
+    assert session.users == {}
+
+
 def test_explicit_host_transfer_also_unpublishes(client):
     host = _create_session(client)
     cid = host["connection_id"]

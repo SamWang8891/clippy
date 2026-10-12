@@ -7,8 +7,10 @@ export function ConfirmDialog({
   confirmText = 'Confirm',
   cancelText = 'Cancel',
   confirmStyle = 'danger',
+  extraText,
   onConfirm,
-  onCancel
+  onCancel,
+  onExtra
 }) {
   const confirmRef = useRef(null);
   const dialogRef = useRef(null);
@@ -56,6 +58,13 @@ export function ConfirmDialog({
           <p className="confirm-message" id={`${id}-message`}>{message}</p>
         </div>
         <div className="confirm-actions">
+          {/* A third way out, set apart on the left: the destructive one
+              that is not the default. */}
+          {onExtra && (
+            <button className="confirm-button extra" onClick={onExtra}>
+              {extraText}
+            </button>
+          )}
           <button className="confirm-button cancel" onClick={onCancel}>
             {cancelText}
           </button>

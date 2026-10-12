@@ -308,6 +308,11 @@ class DestroySessionRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=64)
 
 
+class LeaveSessionRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+
+
 class RenameRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     user_id: str = Field(min_length=1, max_length=64)
@@ -1399,6 +1404,31 @@ async def get_session(connection_id: str, request: Request):
         "Session retrieved",
         session_info.model_dump(),
     )
+
+
+@router.post(
+    "/session/leave",
+    summary="Leave Session",
+    description="Leave the session now; a leaving host hands the seat to the next member"
+)
+async def leave_session(request: LeaveSessionRequest):
+    """
+    Leave at once rather than when a dropped socket's grace runs out. Leaving
+    is a choice, so a host's seat goes to the next member even in a room kept
+    to its host, where a dropped connection would hold the seat for them.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+    uid = session.member_id(request.user_id)
+    if uid is None:
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    await _let_member_go(session, uid)
+    return api_response(HTTPStatus.OK, "Left", {"success": True})
 
 
 @router.post(
@@ -2597,8 +2627,12 @@ async def _remove_user_after_grace(connection_id: str, user_id: str, dropped_as_
     held_seat = user.is_host if dropped_as_host is None else dropped_as_host
     if user.is_host and held_seat and not session.allow_edit:
         return
+    await _let_member_go(session, user_id)
 
-    was_host = user.is_host
+
+async def _let_member_go(session: "Session", user_id: str) -> None:
+    """Remove a member and tell the room; a host's seat goes to the next one."""
+    was_host = session.users[user_id].is_host
     was_public = session.is_public
     session.remove_user(user_id)
 

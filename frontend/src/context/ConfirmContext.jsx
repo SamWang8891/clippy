@@ -19,10 +19,12 @@ export function ConfirmProvider({ children }) {
         resolve(yes);
       };
       answerRef.current = answer;
+      // With `extraText`, a third answer: the promise then resolves 'extra'.
       setDialog({
         ...options,
         onConfirm: () => answer(true),
         onCancel: () => answer(false),
+        onExtra: options.extraText ? () => answer('extra') : undefined,
       });
     });
   }, []);

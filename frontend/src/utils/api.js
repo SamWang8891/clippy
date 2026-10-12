@@ -103,6 +103,17 @@ export async function getSession(sessionId, userId) {
     return handleApiResponse(response);
 }
 
+// Leaving now, rather than when the socket's grace runs out; a host's seat
+// goes to the next member.
+export async function leaveSession(sessionId, userId) {
+    const response = await fetch(`${await getApiBase()}/session/leave`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({connection_id: sessionId, user_id: userId}),
+    });
+    return handleApiResponse(response);
+}
+
 export async function destroySession(sessionId, userId) {
     const response = await fetch(`${await getApiBase()}/session/destroy`, {
         method: 'POST',
