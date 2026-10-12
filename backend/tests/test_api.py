@@ -519,6 +519,24 @@ def test_curl_upload_rejects_oversized_body(client):
     assert r.status_code == 413
 
 
+def test_curl_uploads_stay_out_of_read_only_rooms(client):
+    """curl carries no member token, so it cannot be the host writing."""
+    host = _create_session(client)
+    cid = host["connection_id"]
+    assert client.post("/api/v2/session/toggle_curl", json={
+        "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": True,
+    }).status_code == 200
+
+    _set_visibility(client, host, "public_read")
+    for upload in ({"content": b"hello"}, {"files": {"f": ("a.txt", b"hello")}}):
+        r = client.post(f"/u/{cid}", **upload)
+        assert r.status_code == 403
+        assert r.json()["error"] == "This connection is read-only"
+
+    _set_visibility(client, host, "public_edit")
+    assert client.post(f"/u/{cid}", content=b"hello").status_code == 200
+
+
 def _set_visibility(client, member, visibility):
     r = client.post("/api/v2/session/visibility", json={
         "connection_id": member["connection_id"],

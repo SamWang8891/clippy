@@ -2225,6 +2225,20 @@ async def serve_raw_link(connection_id: str, code: str):
     )
 
 
+def curl_refusal(session: "Session") -> JSONResponse | None:
+    """Why ``session`` takes no curl upload right now, or None when it does.
+
+    A curl upload carries no member token, so a read-only room refuses it even
+    though its host may write there. Asked again once the body is in: a
+    64 MiB upload can outlast the host switching either setting off.
+    """
+    if not session.allow_curl_upload:
+        return JSONResponse(status_code=403, content={"ok": False, "error": "Curl upload is not enabled"})
+    if session.visibility == "public_read":
+        return JSONResponse(status_code=403, content={"ok": False, "error": "This connection is read-only"})
+    return None
+
+
 @app.post("/u/{connection_id}")
 async def curl_upload(connection_id: str, request: Request):
     """Accept text or file uploads via curl.
@@ -2243,8 +2257,9 @@ async def curl_upload(connection_id: str, request: Request):
 
     session = sessions[connection_id]
 
-    if not session.allow_curl_upload:
-        return JSONResponse(status_code=403, content={"ok": False, "error": "Curl upload is not enabled"})
+    refused = curl_refusal(session)
+    if refused is not None:
+        return refused
 
     # Reject anything that declares itself oversized before touching the body.
     declared = request.headers.get("content-length")
@@ -2285,6 +2300,11 @@ async def curl_upload(connection_id: str, request: Request):
 
             async with aiofiles.open(file_path, "wb") as f:
                 await f.write(encrypted_payload)
+
+            refused = curl_refusal(session)
+            if refused is not None:
+                file_path.unlink(missing_ok=True)
+                return refused
 
             block = Block(
                 id=block_id,
@@ -2335,6 +2355,11 @@ async def curl_upload(connection_id: str, request: Request):
         text_file = session.session_dir / f"text_block_{block_id}.txt"
         async with aiofiles.open(text_file, "w", encoding="utf-8") as f:
             await f.write(encrypted_b64)
+
+        refused = curl_refusal(session)
+        if refused is not None:
+            text_file.unlink(missing_ok=True)
+            return refused
 
         session.add_block(block, byte_size=content_bytes)
 
