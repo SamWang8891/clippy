@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
@@ -7,6 +7,7 @@ import {
     createTextBlock,
     deleteBlock,
     getSession,
+    renameSelf,
     replaceFileBlock,
     toggleSessionPublic,
     updateTextBlock,
@@ -19,6 +20,7 @@ import {BlockItem} from './BlockItem';
 import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
+import {storeName} from './SessionEntry';
 import './ClipboardInterface.css';
 
 
@@ -130,6 +132,10 @@ export function ClipboardInterface() {
                     }
                     return prev.filter((u) => u.id !== message.user_id);
                 });
+                break;
+
+            case 'user_renamed':
+                setUsers((prev) => prev.map((u) => u.id === message.user_id ? {...u, name: message.name} : u));
                 break;
 
             case 'block_created':
@@ -326,6 +332,23 @@ export function ClipboardInterface() {
         return () => window.removeEventListener('paste', onPaste);
     }, [uploadDroppedFiles]);
 
+    // Shown at once and corrected by the reply, which may carry a suffix if
+    // someone else already holds the name. Remembered for the entry form too,
+    // so a rejoin after a dropped connection keeps it.
+    const handleRename = async (name) => {
+        const previous = users.find((u) => u.id === myPublicId)?.name;
+        const setMine = (next) => setUsers((prev) => prev.map((u) => u.id === myPublicId ? {...u, name: next} : u));
+        setMine(name);
+        storeName(name);
+        try {
+            const data = await renameSelf(sessionData.connection_id, sessionData.user_id, name);
+            setMine(data.user_name);
+        } catch (err) {
+            setMine(previous);
+            toast.error('Failed to rename: ' + err.message);
+        }
+    };
+
     const handleReplaceFile = async (blockId, file) => {
         try {
             await replaceFileBlock(sessionData.connection_id, sessionData.user_id, blockId, file);
@@ -403,7 +426,7 @@ export function ClipboardInterface() {
                 <div className="desk-row desk-row-bot">
                     {currentUser && (
                         <div className="desk-user">
-                            <span className="desk-user-name">{currentUser.name}</span>
+                            <NameEditor name={currentUser.name} onRename={handleRename} />
                             {currentUser.is_host && <span className="desk-host-tag">HOST</span>}
                         </div>
                     )}
@@ -502,6 +525,66 @@ export function ClipboardInterface() {
 
             {notification && <Notification text={notification}/>}
         </div>
+    );
+}
+
+/**
+ * Your own name, editable in place. Enter or leaving the field saves — on a
+ * phone the keyboard's own dismiss is the natural way out — and Esc backs out.
+ * A cleared field counts as no edit at all.
+ */
+function NameEditor({name, onRename}) {
+    const [draft, setDraft] = useState(null);
+    const cancelledRef = useRef(false);
+
+    if (draft === null) {
+        return (
+            <button
+                type="button"
+                className="desk-user-name"
+                onClick={() => setDraft(name)}
+                aria-label={`Rename ${name}`}
+            >
+                {name}
+            </button>
+        );
+    }
+
+    const finish = () => {
+        const next = draft.trim();
+        const cancelled = cancelledRef.current;
+        cancelledRef.current = false;
+        setDraft(null);
+        if (!cancelled && next && next !== name) onRename(next);
+    };
+
+    const handleKeyDown = (e) => {
+        // An IME uses Enter to accept a composition; that is not a save.
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        if (e.key === 'Enter') {
+            e.currentTarget.blur();
+        } else if (e.key === 'Escape') {
+            cancelledRef.current = true;
+            e.currentTarget.blur();
+        }
+    };
+
+    return (
+        <input
+            className="desk-user-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={finish}
+            onKeyDown={handleKeyDown}
+            onFocus={(e) => e.target.select()}
+            size={Math.max(4, draft.length + 1)}
+            maxLength={64}
+            enterKeyHint="done"
+            spellCheck="false"
+            autoComplete="off"
+            aria-label="Name"
+            autoFocus
+        />
     );
 }
 

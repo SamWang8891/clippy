@@ -143,6 +143,38 @@ def test_forwarded_address_is_believed_only_from_the_proxy():
     assert address("8.8.8.8") == "8.8.8.8"
 
 
+def _rename(client, member, name):
+    r = client.post("/api/v2/session/rename", json={
+        "connection_id": member["connection_id"], "user_id": member["user_id"], "user_name": name,
+    })
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["user_name"]
+
+
+def test_members_rename_themselves_and_everyone_hears_it(client):
+    host = _create_session(client)
+    cid = host["connection_id"]
+    guest = _join(client, cid, name="Bob")
+
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[host["user_id"]]) as ws:
+        assert _rename(client, guest, "  Robert  ") == "Robert"
+        assert ws.receive_json() == {"type": "user_renamed", "user_id": guest["public_id"], "name": "Robert"}
+
+    # Blank means "never mind", not "make one up".
+    assert _rename(client, guest, "   ") == "Robert"
+    # Taking someone else's name is suffixed like a join; keeping your own is not.
+    assert _rename(client, guest, "Alice") == "Alice(2)"
+    assert _rename(client, guest, "Alice") == "Alice(2)"
+
+    users = client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["users"]
+    assert {u["name"] for u in users} == {"Alice", "Alice(2)"}
+
+    r = client.post("/api/v2/session/rename", json={
+        "connection_id": cid, "user_id": guest["public_id"], "user_name": "Mallory",
+    })
+    assert r.status_code == 403  # the public id is not a credential
+
+
 def test_blank_names_do_not_reach_the_lobby(client):
     r = client.post("/api/v2/session/create", json={"user_name": "   "})
     assert r.status_code == 200

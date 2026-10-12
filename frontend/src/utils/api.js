@@ -106,6 +106,15 @@ export async function destroySession(sessionId, userId) {
     return handleApiResponse(response);
 }
 
+export async function renameSelf(sessionId, userId, userName) {
+    const response = await fetch(`${getApiBase()}/session/rename`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({connection_id: sessionId, user_id: userId, user_name: userName}),
+    });
+    return handleApiResponse(response);
+}
+
 export async function transferHost(sessionId, currentHostId, newHostId) {
     const response = await fetch(`${getApiBase()}/session/transfer_host`, {
         method: 'POST',

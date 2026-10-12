@@ -21,7 +21,7 @@ function readStoredName() {
     }
 }
 
-function storeName(name) {
+export function storeName(name) {
     try {
         localStorage.setItem(NAME_STORAGE_KEY, name);
     } catch {

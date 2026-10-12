@@ -111,9 +111,49 @@
     font-size: 14px;
 }
 
-.desk-user-name {
+/* Button and input share one box: the padding the input needs for its border
+   is lent to the button too, and both hand it back with a negative margin, so
+   the name does not move when it turns editable. */
+.desk-user-name,
+.desk-user-input {
+    font: inherit;
     font-weight: 500;
     color: var(--fg);
+    padding: 2px 6px;
+    margin: -2px -6px;
+    border-radius: 4px;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.desk-user-name {
+    cursor: text;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: background 120ms var(--ease);
+}
+
+.desk-user-name:hover {
+    background: var(--bg-elev);
+}
+
+.desk-user-input {
+    padding: 1px 5px;
+    background: var(--bg-elev);
+    border: 1px solid var(--fg);
+}
+
+/* The border already says where focus is; the global ring would double it. */
+.desk-user-input:focus-visible {
+    outline: none;
+}
+
+/* Below 16px iOS zooms the page in on focus. */
+@media (max-width: 639px) {
+    .desk-user-input {
+        font-size: 16px;
+    }
 }
 
 .desk-host-tag {

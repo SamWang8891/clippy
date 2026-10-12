@@ -272,6 +272,12 @@ class DestroySessionRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=64)
 
 
+class RenameRequest(BaseModel):
+    connection_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    user_name: str = Field(max_length=64)
+
+
 class TransferHostRequest(BaseModel):
     connection_id: str = Field(min_length=1, max_length=64)
     # Caller's secret token; `new_host_id` is the target's *public* id.
@@ -398,13 +404,16 @@ class Session:
         """Check if session has exceeded the timeout period."""
         return datetime.now() - self.last_activity > SESSION_TIMEOUT
 
-    def get_unique_name(self, base_name: str) -> str:
+    def get_unique_name(self, base_name: str, exclude: str | None = None) -> str:
         """
         Generate a unique user name by appending numbers if duplicates exist.
 
+        ``exclude`` leaves one member's own name out of the comparison, so
+        renaming to the name you already hold is not a collision with yourself.
+
         Examples: "Sam" -> "Sam", "Sam(2)", "Sam(3)", etc.
         """
-        existing_names = {user.name for user in self.users.values()}
+        existing_names = {user.name for user in self.users.values() if user.id != exclude}
         if base_name not in existing_names:
             return base_name
 
@@ -421,6 +430,20 @@ class Session:
         self.tokens[token] = user_id
         self.update_activity()
         return user
+
+    def rename_user(self, user_id: str, name: str) -> bool:
+        """Rename a member, keeping names unique. Returns whether it changed.
+
+        A blank name changes nothing: clearing the field is backing out of an
+        edit, not asking to be renamed to a random animal.
+        """
+        user = self.users[user_id]
+        new_name = self.get_unique_name(name, exclude=user_id) if name else user.name
+        if new_name == user.name:
+            return False
+        user.name = new_name
+        self.update_activity()
+        return True
 
     def remove_user(self, user_id: str):
         """Remove a user, their token and their WebSocket connections."""
@@ -1268,6 +1291,37 @@ async def destroy_session(request: DestroySessionRequest):
         "Session destroyed",
         {"success": True}
     )
+
+
+@router.post(
+    "/session/rename",
+    summary="Rename Yourself",
+    description="Change the caller's own display name in the session"
+)
+async def rename_user(request: RenameRequest):
+    """
+    Rename the calling member. Any member may, read-only ones included — it is
+    their own label, not the session's content. A blank name is a no-op, and a
+    taken one is suffixed the same way joining does it.
+    """
+    connection_id = request.connection_id.lower()
+
+    if connection_id not in sessions:
+        return api_response(HTTPStatus.NOT_FOUND, "Session not found")
+
+    session = sessions[connection_id]
+    uid = session.member_id(request.user_id)
+    if uid is None:
+        return api_response(HTTPStatus.FORBIDDEN, "User not in session")
+
+    if session.rename_user(uid, request.user_name.strip()):
+        await session.broadcast({
+            "type": "user_renamed",
+            "user_id": uid,
+            "name": session.users[uid].name,
+        })
+
+    return api_response(HTTPStatus.OK, "Name updated", {"user_name": session.users[uid].name})
 
 
 @router.post(
