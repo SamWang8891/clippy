@@ -4,7 +4,7 @@ import {useSession} from '../context/SessionContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useToast} from '../context/ToastContext';
 import {useTheme} from '../hooks/useTheme';
-import {destroySession, toggleCurl, toggleJoin, transferHost} from '../utils/api';
+import {destroySession, toggleCurl, toggleJoin, toggleSessionEdit, transferHost} from '../utils/api';
 import {IconButton} from './IconButton';
 import {Copy} from './animate-ui/icons/copy';
 import {X} from './animate-ui/icons/x';
@@ -93,10 +93,25 @@ export function Menu({session, users, currentUser, onClose}) {
         }
     };
 
+    // curl goes on only while everyone may edit — a curl upload carries
+    // nobody's token — so turning it on in a room kept to its host asks to
+    // open editing first. Declining leaves curl off.
     const handleToggleCurl = async () => {
+        const turningOn = !session?.allow_curl_upload;
         try {
-            await toggleCurl(sessionData.connection_id, sessionData.user_id, !session?.allow_curl_upload);
-            toast.success(session?.allow_curl_upload ? 'Curl upload disabled' : 'Curl upload enabled');
+            if (turningOn && !session?.allow_edit) {
+                const openEditing = await confirm({
+                    title: 'Let everyone edit',
+                    message: 'Curl upload only works while everyone can edit.',
+                    confirmText: 'Let everyone edit',
+                    cancelText: 'Cancel',
+                    confirmStyle: 'primary',
+                });
+                if (!openEditing) return;
+                await toggleSessionEdit(sessionData.connection_id, sessionData.user_id, true);
+            }
+            await toggleCurl(sessionData.connection_id, sessionData.user_id, turningOn);
+            toast.success(turningOn ? 'Curl upload enabled' : 'Curl upload disabled');
         } catch (err) {
             toast.error('Failed to toggle curl upload: ' + err.message);
         }

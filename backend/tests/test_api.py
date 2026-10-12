@@ -630,10 +630,10 @@ def test_deleting_block_revokes_its_raw_link(client):
 def test_curl_upload_rejects_oversized_body(client):
     host = _create_session(client)
     cid, uid = host["connection_id"], host["user_id"]
+    _allow_edit(client, host)
     assert client.post("/api/v2/session/toggle_curl", json={
         "connection_id": cid, "user_id": uid, "allow_curl_upload": True,
     }).status_code == 200
-    _allow_edit(client, host)
 
     import app as app_module
     oversized = b"x" * (app_module.MAX_CURL_UPLOAD_BYTES + 1)
@@ -641,24 +641,54 @@ def test_curl_upload_rejects_oversized_body(client):
     assert r.status_code == 413
 
 
-def test_curl_uploads_stay_out_of_read_only_rooms(client):
-    """curl carries no member token, so it cannot be the host writing."""
+def test_curl_is_on_only_while_everyone_may_edit(client, monkeypatch):
+    """curl carries no member token, so it cannot be the host writing: it may
+    be switched on only while everyone may edit, and goes off with editing."""
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "MAX_BLOCKS_PER_SESSION", 50)
     host = _create_session(client)
     cid = host["connection_id"]
-    assert client.post("/api/v2/session/toggle_curl", json={
-        "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": True,
-    }).status_code == 200
+    session = app_module.sessions[cid]
 
-    # Kept to the host, which a new room is, listed or not.
+    def curl_switch(on):
+        return client.post("/api/v2/session/toggle_curl", json={
+            "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": on})
+
+    uploads = ({"content": b"hello"}, {"files": {"f": ("a.txt", b"hello")}})
+
+    # A new room keeps editing to its host, so curl will not go on.
+    r = curl_switch(True)
+    assert r.status_code == 409
+    assert r.json()["message"] == "Curl upload needs everyone to be able to edit"
+    assert session.allow_curl_upload is False
+    assert client.post(f"/u/{cid}", content=b"hello").status_code == 403
+
+    # With editing open it does, listed or not.
+    _allow_edit(client, host)
+    assert curl_switch(True).status_code == 200
     for listed in (False, True):
         _publish(client, host, listed)
-        for upload in ({"content": b"hello"}, {"files": {"f": ("a.txt", b"hello")}}):
-            r = client.post(f"/u/{cid}", **upload)
-            assert r.status_code == 403
-            assert r.json()["error"] == "This connection is read-only"
+        for upload in uploads:
+            assert client.post(f"/u/{cid}", **upload).status_code == 200, listed
 
+    # Closing editing closes curl, and everyone hears both.
+    with client.websocket_connect(f"/ws/{cid}", subprotocols=[host["user_id"]]) as ws:
+        _allow_edit(client, host, False)
+        assert ws.receive_json() == {"type": "edit_permission_changed", "allow_edit": False}
+        assert ws.receive_json() == {"type": "curl_permission_changed", "allow_curl_upload": False}
+    assert session.allow_curl_upload is False
+    for upload in uploads:
+        r = client.post(f"/u/{cid}", **upload)
+        assert (r.status_code, r.json()["error"]) == (403, "Curl upload is not enabled")
+    # Opening editing again leaves curl off until it is asked for.
     _allow_edit(client, host)
-    assert client.post(f"/u/{cid}", content=b"hello").status_code == 200
+    assert session.allow_curl_upload is False
+
+    # A room saved with curl on and editing kept to the host loads with curl off.
+    snapshot = {"connection_id": "curlsnap", "users": {}, "last_activity": "2026-10-12T10:00:00",
+                "allow_curl_upload": True, "allow_edit": False}
+    assert app_module.Session.from_dict(snapshot).allow_curl_upload is False
 
 
 def _writes(client, member, block_id, file_block_id):
@@ -736,6 +766,7 @@ def test_writes_that_lose_permission_mid_write_leave_nothing_behind(client, monk
     }).json()["data"]["block_id"]
     file_block_id = client.post("/api/v2/block/upload", data={"connection_id": cid, "user_id": host["user_id"]},
                                 files={"file": ("f.bin", b"f")}).json()["data"]["block_id"]
+    _allow_edit(client, host)  # curl goes on only with editing open
     assert client.post("/api/v2/session/toggle_curl", json={
         "connection_id": cid, "user_id": host["user_id"], "allow_curl_upload": True,
     }).status_code == 200
