@@ -82,6 +82,14 @@ ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
 # A limit of 0 turns this off.
 CREATE_RATE_LIMIT = int(os.getenv("CREATE_RATE_LIMIT", "3"))
 CREATE_RATE_WINDOW_SECONDS = float(os.getenv("CREATE_RATE_WINDOW_SECONDS", "15"))
+# The hops whose X-Real-IP is believed, as comma-separated addresses or CIDR
+# ranges. The image runs nginx beside the app, so loopback is all it needs; a
+# proxy in another container or on another host has to be listed.
+TRUSTED_PROXIES = tuple(
+    ipaddress.ip_network(entry.strip(), strict=False)
+    for entry in os.getenv("TRUSTED_PROXIES", "127.0.0.1").split(",")
+    if entry.strip()
+)
 
 # Wire-format constant, NOT an API version: it is baked into the key derivation
 # and must byte-match KDF_PREFIX in frontend/src/utils/encryption.js. Changing it
@@ -876,17 +884,37 @@ def client_address(request: Request) -> str:
     """The caller's address as the reverse proxy saw it.
 
     nginx overwrites X-Real-IP on everything it forwards, so the header is
-    believed only when the hop handing it over is on a private network — that
-    is, when it is the proxy. Straight from the internet it is the caller's own
-    claim, and believing it would let anyone pick their rate-limit bucket.
+    believed only when the hop handing it over is one of TRUSTED_PROXIES. From
+    anywhere else it is the caller's own claim, and believing it would let them
+    pick their rate-limit bucket. Any private address used to count as the
+    proxy, which let anything else on the network do exactly that.
     """
     peer = request.client.host if request.client else ""
     forwarded = request.headers.get("x-real-ip", "").strip()
     try:
-        from_proxy = ipaddress.ip_address(peer).is_private
+        from_proxy = any(ipaddress.ip_address(peer) in net for net in TRUSTED_PROXIES)
     except ValueError:
         from_proxy = False
     return forwarded if forwarded and from_proxy else peer
+
+
+def rate_key(address: str) -> str:
+    """The bucket ``address`` counts against.
+
+    An IPv6 subscriber is handed a whole /64, so one bucket per address would
+    give each of them 2**64. An IPv4 caller reaching a dual-stack socket shows
+    up as ``::ffff:a.b.c.d``, and keying that by /64 would put every IPv4
+    caller in one bucket, so it counts as the IPv4 address it is.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 6 and ip.ipv4_mapped:
+        return str(ip.ipv4_mapped)
+    if ip.version == 6:
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return str(ip)
 
 
 # address -> monotonic times of its recent session creations, oldest first.
@@ -909,7 +937,10 @@ def creation_wait(address: str) -> float:
 
 
 def record_creation(address: str) -> None:
-    creation_log.setdefault(address, deque()).append(time.monotonic())
+    # With the limit off nothing trims the log, so a busy address's stamps
+    # would pile up for as long as it kept creating.
+    if CREATE_RATE_LIMIT > 0:
+        creation_log.setdefault(address, deque()).append(time.monotonic())
 
 
 def prune_creation_log() -> None:
@@ -1154,7 +1185,7 @@ async def create_session(request: CreateSessionRequest, http_request: Request):
 
     # Checked after validation so a typo is reported as a typo, and recorded
     # only once the session exists so a refused request costs nothing.
-    address = client_address(http_request)
+    address = rate_key(client_address(http_request))
     wait = creation_wait(address)
     if wait > 0:
         seconds = math.ceil(wait)

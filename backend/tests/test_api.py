@@ -125,7 +125,9 @@ def test_creation_is_rate_limited_per_address_but_joining_is_not(client, monkeyp
     assert _enter(client).status_code == 429
 
 
-def test_forwarded_address_is_believed_only_from_the_proxy():
+def test_forwarded_address_is_believed_only_from_the_proxy(monkeypatch):
+    import ipaddress
+
     from starlette.requests import Request
 
     import app as app_module
@@ -137,10 +139,34 @@ def test_forwarded_address_is_believed_only_from_the_proxy():
             "headers": [(b"x-real-ip", b"203.0.113.9")],
         }))
 
-    assert address("172.18.0.3") == "203.0.113.9"  # nginx in its own container
     assert address("127.0.0.1") == "203.0.113.9"  # nginx in the same container
-    # Straight from the internet the header is the caller's own claim.
+    # Anything else is the caller's own claim, a neighbour on the network included.
+    assert address("172.18.0.3") == "172.18.0.3"
     assert address("8.8.8.8") == "8.8.8.8"
+
+    # A proxy in a container of its own has to be named.
+    monkeypatch.setattr(app_module, "TRUSTED_PROXIES", (ipaddress.ip_network("172.16.0.0/12"),))
+    assert address("172.18.0.3") == "203.0.113.9"
+    assert address("127.0.0.1") == "127.0.0.1"
+
+
+def test_creations_count_per_ipv6_subscriber_not_per_address(client):
+    import app as app_module
+
+    key = app_module.rate_key
+    # One subscriber's /64 is a single bucket; the next /64 is someone else.
+    assert key("2001:db8:1:2:3:4:5:6") == key("2001:db8:1:2:ffff::1") == "2001:db8:1:2::/64"
+    assert key("2001:db8:1:3::1") != key("2001:db8:1:2::1")
+    # An IPv4 caller on a dual-stack socket keeps a bucket of its own.
+    assert key("::ffff:203.0.113.9") == key("203.0.113.9") == "203.0.113.9"
+    assert key("::ffff:203.0.113.9") != key("::ffff:198.51.100.1")
+    assert key("testclient") == "testclient"
+
+    # With the limit off nothing is kept to trim later.
+    assert app_module.CREATE_RATE_LIMIT == 0
+    _create_session(client)
+    _create_session(client)
+    assert app_module.creation_log == {}
 
 
 def _rename(client, member, name):
