@@ -813,8 +813,20 @@ export function ClipboardInterface() {
         }
     };
 
+    // Closing editing closes curl with it (see toggle_edit), so with curl on
+    // the host is told first; declining changes nothing.
     const handleToggleEdit = async () => {
         const next = !session?.allow_edit;
+        if (!next && session?.allow_curl_upload) {
+            const closeBoth = await confirm({
+                title: 'Keep editing to the host',
+                message: 'Curl upload will be turned off too.',
+                confirmText: 'Turn off',
+                cancelText: 'Cancel',
+                confirmStyle: 'primary',
+            });
+            if (!closeBoth) return;
+        }
         try {
             await toggleSessionEdit(sessionData.connection_id, sessionData.user_id, next);
             toast.success(next ? 'Everyone can edit' : 'Only the host can edit');
