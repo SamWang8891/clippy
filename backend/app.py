@@ -1287,7 +1287,10 @@ async def join_session(request: JoinSessionRequest):
             "user_id": token,
             "public_id": user_id,
             "user_name": user.name,
-            "is_host": False
+            "is_host": False,
+            # The room's lobby label, so the entry form can say whose room
+            # an ID it was handed turned out to be.
+            "session_name": session.name,
         }
     )
 

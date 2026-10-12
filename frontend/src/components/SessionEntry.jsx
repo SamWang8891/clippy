@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {enterSession, getConnectionIdRules, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
+import {useToast} from '../context/ToastContext';
 import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
 import {PublicSessions} from './PublicSessions';
 import {IconButton} from './IconButton';
@@ -92,6 +93,7 @@ export function SessionEntry() {
     const [idRules, setIdRules] = useState(DEFAULT_ID_RULES);
     const idInputRef = useRef(null);
     const {setSessionData} = useSession();
+    const toast = useToast();
 
     // Persisted on every change, including when cleared: an empty field is a
     // deliberate "give me a random name", not a reason to resurrect the old one.
@@ -150,9 +152,15 @@ export function SessionEntry() {
 
     // Whether this joins or creates is the server's call: a live ID joins it,
     // a free one creates it, a blank one creates a room under a generated ID.
+    // Which one happened is said out loud, since an ID someone else already
+    // holds would otherwise land the user in their room without a word.
     const handleSubmit = (e) => {
         e.preventDefault();
-        connect(() => enterSession(sessionId || null, userName || null));
+        connect(async () => {
+            const data = await enterSession(sessionId || null, userName || null);
+            toast.success(data.is_host ? 'Created' : `Joined ${data.session_name}'s connection`);
+            return data;
+        });
     };
 
     // A lobby row is a room someone published; if it has gone in the

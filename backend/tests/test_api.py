@@ -92,6 +92,8 @@ def test_enter_joins_a_live_id_and_creates_a_free_one(client):
     guest = joined.json()["data"]
     assert guest["connection_id"] == host["connection_id"]
     assert guest["is_host"] is False
+    # Whose room it was, for the form to say so.
+    assert guest["session_name"] == "Carol"
 
     free = "q" * app_module.CONNECTION_ID_LENGTH
     named = _enter(client, free).json()["data"]
