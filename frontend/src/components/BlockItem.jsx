@@ -1,4 +1,5 @@
-import React, {useEffect, useMemo, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {Reorder, useDragControls} from 'motion/react';
 import hljs from 'highlight.js/lib/common';
 import powershell from 'highlight.js/lib/languages/powershell';
 hljs.registerLanguage('powershell', powershell);
@@ -11,6 +12,8 @@ import {Select} from './Select';
 import {IconButton} from './IconButton';
 import {Copy} from './animate-ui/icons/copy';
 import {Download} from './animate-ui/icons/download';
+import {GripVertical} from './animate-ui/icons/grip-vertical';
+import {AnimateIcon} from './animate-ui/icons/icon';
 import {Link} from './animate-ui/icons/link';
 import {Pen} from './animate-ui/icons/pen';
 import {RefreshCcw} from './animate-ui/icons/refresh-ccw';
@@ -99,10 +102,25 @@ function formatTime(iso) {
         d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 
+const CAN_HOVER = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(hover: hover)').matches);
+
 // canEdit off means a read-only room: copying and downloading stay, and every
 // control that writes is gone — raw links included, since each one is a copy
-// counted against the session's storage.
-export function BlockItem({block, index, sessionId, userId, canEdit = true, onDelete, onUpdateText, onReplaceFile}) {
+// counted against the session's storage. Reordering is a write too.
+export function BlockItem({
+    ref,
+    block,
+    index,
+    sessionId,
+    userId,
+    canEdit = true,
+    onDelete,
+    onUpdateText,
+    onReplaceFile,
+    onDragStart,
+    onDragEnd,
+    onMoveBy,
+}) {
     const [decryptedContent, setDecryptedContent] = useState('');
     const [isDecrypting, setIsDecrypting] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
@@ -116,6 +134,18 @@ export function BlockItem({block, index, sessionId, userId, canEdit = true, onDe
     const [isPreviewVisible, setIsPreviewVisible] = useState(false);
     const articleRef = useRef(null);
     const fileInputRef = useRef(null);
+    const handleRef = useRef(null);
+    const dragControls = useDragControls();
+    const [isDragging, setIsDragging] = useState(false);
+    const canReorder = canEdit && Boolean(onMoveBy);
+
+    // AnimatePresence hands a ref down to measure a block on its way out; the
+    // preview observer needs the same element.
+    const setArticle = useCallback((node) => {
+        articleRef.current = node;
+        if (typeof ref === 'function') ref(node);
+        else if (ref) ref.current = node;
+    }, [ref]);
     const toast = useToast();
 
     useEffect(() => {
@@ -310,6 +340,16 @@ export function BlockItem({block, index, sessionId, userId, canEdit = true, onDe
         }
     };
 
+    // Arrow keys move a block one place, for anyone not dragging with a pointer.
+    // Focus is put back afterwards: moving a block down re-inserts its node,
+    // and a re-inserted node drops focus.
+    const handleHandleKeyDown = (e) => {
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+        onMoveBy(block.id, e.key === 'ArrowUp' ? -1 : 1);
+        requestAnimationFrame(() => handleRef.current?.focus());
+    };
+
     const timestamp = formatTime(block.created_at);
 
     const title = block.type === 'file'
@@ -317,13 +357,28 @@ export function BlockItem({block, index, sessionId, userId, canEdit = true, onDe
         : rendered ? `code · ${rendered.language}` : 'text';
 
     return (
-        // --i staggers the entrance down the list. The view-transition name is
-        // what lets a deletion animate: the browser keeps a snapshot of this
-        // block to fade out while the ones below slide up into its place.
-        <article
-            className="block"
-            ref={articleRef}
-            style={{'--i': index, viewTransitionName: `block-${block.id}`}}
+        // --i staggers the CSS entrance down the list. Motion owns the rest:
+        // dragging only from the handle, sliding neighbours into new places
+        // (position only, so text never stretches mid-move), and the fade out.
+        <Reorder.Item
+            as="article"
+            value={block.id}
+            ref={setArticle}
+            className={`block ${canReorder ? 'has-handle' : ''} ${isDragging ? 'is-dragging' : ''}`}
+            style={{'--i': index}}
+            layout="position"
+            dragListener={false}
+            dragControls={dragControls}
+            whileDrag={{scale: 1.01}}
+            exit={{opacity: 0, scale: 0.98, transition: {duration: 0.18}}}
+            onDragStart={() => {
+                setIsDragging(true);
+                onDragStart?.(block.id);
+            }}
+            onDragEnd={() => {
+                setIsDragging(false);
+                onDragEnd?.(block.id);
+            }}
         >
             <header className="block-head">
                 <span className="block-title" title={title}>{title}</span>
@@ -510,6 +565,25 @@ export function BlockItem({block, index, sessionId, userId, canEdit = true, onDe
                     )}
                 </div>
             )}
-        </article>
+            {canReorder && (
+                // The whole right edge is the grip, so it is easy to find with
+                // a thumb; touch-action stops it from scrolling the page.
+                <AnimateIcon asChild animate={isDragging} animateOnHover={CAN_HOVER}>
+                    <button
+                        ref={handleRef}
+                        type="button"
+                        className="block-handle"
+                        onPointerDown={(e) => {
+                            if (e.button === 0) dragControls.start(e);
+                        }}
+                        onKeyDown={handleHandleKeyDown}
+                        aria-label="Reorder"
+                        title="Drag to reorder"
+                    >
+                        <GripVertical size={18} aria-hidden="true" />
+                    </button>
+                </AnimateIcon>
+            )}
+        </Reorder.Item>
     );
 }

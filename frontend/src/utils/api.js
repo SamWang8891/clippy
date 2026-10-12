@@ -254,6 +254,21 @@ export async function replaceFileBlock(sessionId, userId, blockId, file) {
     return handleApiResponse(response);
 }
 
+/** Place a block right after `afterId`, or first when it is null. */
+export async function moveBlock(sessionId, userId, blockId, afterId) {
+    const response = await fetch(`${getApiBase()}/block/move`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            connection_id: sessionId,
+            user_id: userId,
+            block_id: blockId,
+            after_id: afterId,
+        }),
+    });
+    return handleApiResponse(response);
+}
+
 export async function deleteBlock(sessionId, userId, blockId) {
     const response = await fetch(`${getApiBase()}/block/delete`, {
         method: 'DELETE',

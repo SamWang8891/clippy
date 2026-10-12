@@ -1,4 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
+import {AnimatePresence, Reorder} from 'motion/react';
 import {useSession} from '../context/SessionContext';
 import {useToast} from '../context/ToastContext';
 import {useConfirm} from '../context/ConfirmContext';
@@ -7,6 +8,7 @@ import {
     createTextBlock,
     deleteBlock,
     getSession,
+    moveBlock,
     renameSelf,
     replaceFileBlock,
     setSessionVisibility,
@@ -14,7 +16,6 @@ import {
     uploadFileBlock,
 } from '../utils/api';
 import {clearSessionKey, setSessionKeyFromConnectionId} from '../utils/encryption';
-import {viewTransition} from '../utils/motion';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
 import {LinedTextarea} from './LinedTextarea';
@@ -28,6 +29,19 @@ import {Menu} from './Menu';
 import {Notification} from './Notification';
 import {storeName} from './SessionEntry';
 import './ClipboardInterface.css';
+
+/**
+ * The blocks in `order`. Any it does not mention go last in their current
+ * order, so a block that arrived while a drag was under way is never dropped.
+ */
+function applyOrder(blocks, order) {
+    const rank = new Map(order.map((id, i) => [id, i]));
+    const ranked = blocks.filter((b) => rank.has(b.id)).sort((a, b) => rank.get(a.id) - rank.get(b.id));
+    return [...ranked, ...blocks.filter((b) => !rank.has(b.id))];
+}
+
+// The block a block sits right after — what the server takes as its anchor.
+const anchorOf = (ids, id) => ids[ids.indexOf(id) - 1] ?? null;
 
 const NEXT_VISIBILITY = {private: 'public_read', public_read: 'public_edit', public_edit: 'private'};
 const VISIBILITY_TOASTS = {
@@ -54,6 +68,14 @@ export function ClipboardInterface() {
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [pendingUploads, setPendingUploads] = useState(0);
     const brandIntro = useIntro(900);
+
+    // Drag handlers run after renders they did not cause; they read the order
+    // from here instead of from a stale closure.
+    const blocksRef = useRef(blocks);
+    const dragAnchorRef = useRef(null);
+    useEffect(() => {
+        blocksRef.current = blocks;
+    }, [blocks]);
 
     const currentUser = users.find((u) => u.id === myPublicId);
     // Off until the session has loaded, so a read-only room never flashes its
@@ -162,10 +184,12 @@ export function ClipboardInterface() {
                 break;
 
             case 'block_deleted':
-                // The only change here that removes something, so it is the only
-                // one worth a transition: the block fades out while the list
-                // closes the gap instead of everything below jumping up.
-                viewTransition(() => setBlocks((prev) => prev.filter((b) => b.id !== message.block_id)));
+                // AnimatePresence fades it out while the blocks below slide up.
+                setBlocks((prev) => prev.filter((b) => b.id !== message.block_id));
+                break;
+
+            case 'blocks_reordered':
+                setBlocks((prev) => applyOrder(prev, message.order));
                 break;
 
             case 'block_updated':
@@ -382,6 +406,38 @@ export function ClipboardInterface() {
         }
     };
 
+    // The order is shown at once; a refused move reloads the server's.
+    const persistMove = async (blockId, afterId) => {
+        try {
+            await moveBlock(sessionData.connection_id, sessionData.user_id, blockId, afterId);
+        } catch (err) {
+            toast.error('Failed to move: ' + err.message);
+            loadSession();
+        }
+    };
+
+    // Reorder calls this on every swap mid-drag; only the drop is sent.
+    const handleReorder = (ids) => setBlocks((prev) => applyOrder(prev, ids));
+
+    const handleDragStart = (blockId) => {
+        dragAnchorRef.current = anchorOf(blocksRef.current.map((b) => b.id), blockId);
+    };
+
+    const handleDragEnd = (blockId) => {
+        const anchor = anchorOf(blocksRef.current.map((b) => b.id), blockId);
+        if (anchor !== dragAnchorRef.current) persistMove(blockId, anchor);
+    };
+
+    const handleMoveBy = (blockId, delta) => {
+        const ids = blocksRef.current.map((b) => b.id);
+        const to = ids.indexOf(blockId) + delta;
+        if (to < 0 || to >= ids.length) return;
+        const next = ids.filter((id) => id !== blockId);
+        next.splice(to, 0, blockId);
+        setBlocks((prev) => applyOrder(prev, next));
+        persistMove(blockId, anchorOf(next, blockId));
+    };
+
     const handleDeleteBlock = async (blockId) => {
         try {
             await deleteBlock(sessionData.connection_id, sessionData.user_id, blockId);
@@ -481,21 +537,34 @@ export function ClipboardInterface() {
             <div className="desk-body">
                 <div className="desk-count">{countLabel}</div>
 
-                <div className="desk-blocks">
-                    {blocks.map((block, idx) => (
-                        <BlockItem
-                            key={block.id}
-                            index={idx}
-                            block={block}
-                            sessionId={sessionData.connection_id}
-                            userId={sessionData.user_id}
-                            canEdit={canEdit}
-                            onDelete={handleDeleteBlock}
-                            onUpdateText={handleUpdateText}
-                            onReplaceFile={handleReplaceFile}
-                        />
-                    ))}
-                </div>
+                <Reorder.Group
+                    as="div"
+                    axis="y"
+                    className="desk-blocks"
+                    values={blocks.map((b) => b.id)}
+                    onReorder={handleReorder}
+                >
+                    {/* popLayout takes a deleted block out of the flow at once,
+                        so the ones below start sliding up while it fades. */}
+                    <AnimatePresence initial={false} mode="popLayout">
+                        {blocks.map((block, idx) => (
+                            <BlockItem
+                                key={block.id}
+                                index={idx}
+                                block={block}
+                                sessionId={sessionData.connection_id}
+                                userId={sessionData.user_id}
+                                canEdit={canEdit}
+                                onDelete={handleDeleteBlock}
+                                onUpdateText={handleUpdateText}
+                                onReplaceFile={handleReplaceFile}
+                                onDragStart={handleDragStart}
+                                onDragEnd={handleDragEnd}
+                                onMoveBy={handleMoveBy}
+                            />
+                        ))}
+                    </AnimatePresence>
+                </Reorder.Group>
 
                 {!canEdit ? null : isCreating ? (
                     <div className="compose">

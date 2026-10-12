@@ -15,6 +15,7 @@
     --danger-bg: #fef2f2;
     --focus: #0a0a0a;
     --shadow: 0 1px 2px rgba(10, 10, 10, 0.04), 0 4px 12px rgba(10, 10, 10, 0.04);
+    --shadow-lift: 0 2px 4px rgba(10, 10, 10, 0.06), 0 14px 32px rgba(10, 10, 10, 0.14);
 
     --radius: 8px;
     --radius-sm: 6px;
@@ -41,6 +42,7 @@
     --danger-bg: #2a1717;
     --focus: #fafafa;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 6px 16px rgba(0, 0, 0, 0.35);
+    --shadow-lift: 0 2px 6px rgba(0, 0, 0, 0.5), 0 16px 36px rgba(0, 0, 0, 0.55);
 
     --syntax-keyword: #86efac;
     --syntax-string: #fde047;
@@ -98,11 +100,15 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* The one entrance used across the app: appear, and settle upward. `to` is left
-   off on purpose so it lands on whatever the element's own styles say. */
+   off on purpose so it lands on whatever the element's own styles say.
+
+   It moves `translate`, never `transform`: Motion owns `transform` on the
+   blocks it drags, and a keyframe animation on that same property threw the
+   dragged block a slot ahead of the pointer after every swap. */
 @keyframes rise-in {
     from {
         opacity: 0;
-        transform: translateY(8px);
+        translate: 0 8px;
     }
 }
 
