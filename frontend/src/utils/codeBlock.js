@@ -12,29 +12,31 @@
  * Plain text has no prefix and is returned as-is.
  */
 
+// Alphabetical between the two fixed ends, so a language is found by its
+// first letter (the picker jumps on a typed letter too).
 export const SUPPORTED_LANGUAGES = [
     {id: 'auto', label: 'Auto-detect'},
-    {id: 'javascript', label: 'JavaScript'},
-    {id: 'typescript', label: 'TypeScript'},
-    {id: 'python', label: 'Python'},
-    {id: 'go', label: 'Go'},
-    {id: 'rust', label: 'Rust'},
-    {id: 'java', label: 'Java'},
-    {id: 'kotlin', label: 'Kotlin'},
-    {id: 'swift', label: 'Swift'},
+    {id: 'bash', label: 'Bash'},
     {id: 'c', label: 'C'},
-    {id: 'cpp', label: 'C++'},
     {id: 'csharp', label: 'C#'},
-    {id: 'ruby', label: 'Ruby'},
-    {id: 'php', label: 'PHP'},
-    {id: 'bash', label: 'Shell / Bash'},
-    {id: 'powershell', label: 'PowerShell'},
-    {id: 'sql', label: 'SQL'},
-    {id: 'json', label: 'JSON'},
-    {id: 'yaml', label: 'YAML'},
-    {id: 'xml', label: 'XML / HTML'},
+    {id: 'cpp', label: 'C++'},
     {id: 'css', label: 'CSS'},
+    {id: 'go', label: 'Go'},
+    {id: 'java', label: 'Java'},
+    {id: 'javascript', label: 'JavaScript'},
+    {id: 'json', label: 'JSON'},
+    {id: 'kotlin', label: 'Kotlin'},
     {id: 'markdown', label: 'Markdown'},
+    {id: 'php', label: 'PHP'},
+    {id: 'powershell', label: 'PowerShell'},
+    {id: 'python', label: 'Python'},
+    {id: 'ruby', label: 'Ruby'},
+    {id: 'rust', label: 'Rust'},
+    {id: 'sql', label: 'SQL'},
+    {id: 'swift', label: 'Swift'},
+    {id: 'typescript', label: 'TypeScript'},
+    {id: 'xml', label: 'XML / HTML'},
+    {id: 'yaml', label: 'YAML'},
     {id: 'plaintext', label: 'Plain (no highlight)'},
 ];
 
