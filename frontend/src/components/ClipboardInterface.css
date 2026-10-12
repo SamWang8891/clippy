@@ -1,11 +1,16 @@
-/* Room to scroll past the last card, so it never sits on the bottom edge
-   and a composer opened at the end can be brought to mid-screen. */
+/* Room to scroll past the last card, so it never sits on the bottom edge,
+   and less of it under an open composer, which brings its own height. */
 .desk {
     display: flex;
     flex-direction: column;
     gap: 24px;
-    padding-bottom: 40vh;
+    padding-bottom: 24vh;
+    transition: padding-bottom 180ms var(--ease);
     animation: rise-in 320ms var(--ease) backwards;
+}
+
+.desk.is-composing {
+    padding-bottom: 12vh;
 }
 
 .desk-head {
@@ -274,9 +279,8 @@
 }
 
 /* AnimatePresence marks whatever it is fading out with data-motion-pop-id.
-   A leaving composer or block must not take clicks meant for what replaces
-   it — Cancel on a fading card would close the fresh one. */
-.compose[data-motion-pop-id],
+   A leaving block must not take clicks meant for what replaces it. A folding
+   composer is kept out of the way by FOLD itself. */
 .block[data-motion-pop-id] {
     pointer-events: none;
 }

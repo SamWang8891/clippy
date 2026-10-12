@@ -75,6 +75,20 @@ const COMPOSE_TABS = [
 ];
 // The same snap as the block list: quick, and settled rather than springy.
 const QUICK = {duration: 0.18, ease: [0.2, 0, 0, 1]};
+// The composer and New item fold into each other: height runs between none
+// and the content's own while the content fades. Clipped only while moving,
+// as the open composer's language list hangs out of the card; a folding one
+// takes no clicks.
+const FOLD = {
+    folded: {height: 0, opacity: 0, overflow: 'hidden', pointerEvents: 'none'},
+    open: {height: 'auto', opacity: 1, pointerEvents: 'auto', transitionEnd: {overflow: 'visible'}},
+};
+// Unhurried for a fold, and gentle off the mark: the opening frame also
+// mounts the whole composer, and a fast start spent itself in that one frame.
+const FOLD_TIMING = {duration: 0.26, ease: [0.3, 0, 0.2, 1]};
+// Longer than a fold, in case the composer was gone before a save landed and
+// no fold is left to say it has finished.
+const HOLD_FALLBACK_MS = 400;
 
 
 
@@ -105,6 +119,16 @@ export function ClipboardInterface() {
     // report it, and the outside-press handler below reads it.
     const composeDirtyRef = useRef(false);
     const askingRef = useRef(false);
+    // A saved item waits for the composer to fold away before it joins the
+    // list, so the card closing and the block arriving do not shove each
+    // other about. Only our own new blocks wait, and only while a save of
+    // ours is out: null, or the blocks held back.
+    const heldBlocksRef = useRef(null);
+    const releaseHeldBlocks = useCallback(() => {
+        const held = heldBlocksRef.current;
+        heldBlocksRef.current = null;
+        if (held?.length) setBlocks((prev) => [...prev, ...held.filter((b) => !prev.some((p) => p.id === b.id))]);
+    }, []);
     const [newBlockType, setNewBlockType] = useState('text');
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [pendingUploads, setPendingUploads] = useState(0);
@@ -229,6 +253,10 @@ export function ClipboardInterface() {
                 break;
 
             case 'block_created':
+                if (heldBlocksRef.current && message.block.created_by === myPublicId) {
+                    heldBlocksRef.current.push(message.block);
+                    break;
+                }
                 setBlocks((prev) => [...prev, message.block]);
                 break;
 
@@ -323,11 +351,6 @@ export function ClipboardInterface() {
         setIsCreating(true);
     };
 
-    // Each opening glides the new card into view; the form focuses its field
-    // without scrolling, so the page does not jump there first.
-    useEffect(() => {
-        if (isCreating && canEdit) centerInView(composeRef.current);
-    }, [isCreating, canEdit, composeSession]);
 
     const closeComposer = () => {
         composeDirtyRef.current = false;
@@ -434,16 +457,24 @@ export function ClipboardInterface() {
         return () => window.removeEventListener('keydown', onKeyDown);
     }, [canEdit, isCreating]);
 
-    // Rethrown so the form knows to offer Save again; a success closes it.
-    const handleCreateTextBlock = async (content) => {
+    // Holds our new block back until the composer has folded; see
+    // heldBlocksRef. Rethrown so the form knows to offer its button again.
+    const saveThenFold = async (save, failure) => {
+        heldBlocksRef.current = heldBlocksRef.current ?? [];
         try {
-            await createTextBlock(sessionData.connection_id, sessionData.user_id, content);
-            closeComposer();
-            toast.success('Saved');
+            await save();
         } catch (err) {
-            toast.error('Failed to save: ' + err.message);
+            releaseHeldBlocks();
+            toast.error(failure + err.message);
             throw err;
         }
+        closeComposer();
+        setTimeout(releaseHeldBlocks, HOLD_FALLBACK_MS);
+    };
+
+    const handleCreateTextBlock = async (content) => {
+        await saveThenFold(() => createTextBlock(sessionData.connection_id, sessionData.user_id, content), 'Failed to save: ');
+        toast.success('Saved');
     };
 
     // The bar below says it and offers it back, so there is no toast as well.
@@ -462,14 +493,8 @@ export function ClipboardInterface() {
     };
 
     const handleUploadFile = async (file) => {
-        try {
-            await uploadFileBlock(sessionData.connection_id, sessionData.user_id, file);
-            closeComposer();
-            toast.success('Uploaded');
-        } catch (err) {
-            toast.error('Failed to upload: ' + err.message);
-            throw err;
-        }
+        await saveThenFold(() => uploadFileBlock(sessionData.connection_id, sessionData.user_id, file), 'Failed to upload: ');
+        toast.success('Uploaded');
     };
 
     // Dropped files skip the composer entirely: they upload one after another
@@ -729,7 +754,7 @@ export function ClipboardInterface() {
         : blocks.length === 1 ? '1 item' : `${blocks.length} items`;
 
     return (
-        <div className="desk">
+        <div className={`desk ${isCreating && canEdit ? 'is-composing' : ''}`}>
             <header className="desk-head">
                 <div className="desk-row desk-row-top">
                     <IconButton
@@ -832,22 +857,32 @@ export function ClipboardInterface() {
                     </AnimatePresence>
                 </Reorder.Group>
 
-                {/* The composer and New item hand over to each other: whichever
-                    way it closes — Cancel, Esc, a press outside, Save — the card
-                    sinks away as the button fades back in, and opening is the
-                    same move in reverse. popLayout lets the two overlap. */}
-                <AnimatePresence mode="popLayout" initial={false}>
+                {/* Whichever way the composer closes — Cancel, Esc, a press
+                    outside, Save — it folds down as New item unfolds, and
+                    opening is the same move in reverse, so the height below
+                    the list runs smoothly instead of being cut. The slot slides
+                    when the list above it grows, as a saved item joins it. */}
+                <motion.div className="compose-slot" layout="position" transition={FOLD_TIMING}>
+                <AnimatePresence initial={false} onExitComplete={releaseHeldBlocks}>
                 {!canEdit ? null : isCreating ? (
-                    // layout animates the card's height between forms; the
-                    // children ride along by position, so text never squashes.
                     <motion.div
                         key={`compose-${composeSession}`}
+                        variants={FOLD}
+                        initial="folded"
+                        animate="open"
+                        exit="folded"
+                        transition={FOLD_TIMING}
+                        // Unfolded, it can be brought to mid-screen at its full height.
+                        onAnimationComplete={(name) => {
+                            if (name === 'open') centerInView(composeRef.current);
+                        }}
+                    >
+                    {/* layout animates the card's height between forms; the
+                        children ride along by position, so text never squashes. */}
+                    <motion.div
                         className="compose"
                         ref={setComposeNode}
                         layout
-                        initial={{opacity: 0, y: 8, scale: 0.985}}
-                        animate={{opacity: 1, y: 0, scale: 1}}
-                        exit={{opacity: 0, y: 8, scale: 0.985, transition: {duration: 0.15, ease: [0.4, 0, 1, 1]}}}
                         transition={QUICK}
                         style={{borderRadius: 8}}
                         onKeyDown={handleComposeKeyDown}
@@ -904,14 +939,9 @@ export function ClipboardInterface() {
                             </motion.div>
                         </AnimatePresence>
                     </motion.div>
+                    </motion.div>
                 ) : (
-                    <motion.div
-                        key="open"
-                        initial={{opacity: 0}}
-                        animate={{opacity: 1}}
-                        exit={{opacity: 0, transition: {duration: 0.1}}}
-                        transition={QUICK}
-                    >
+                    <motion.div key="open" variants={FOLD} initial="folded" animate="open" exit="folded" transition={FOLD_TIMING}>
                         <IconButton
                             icon={Plus}
                             size={20}
@@ -926,6 +956,7 @@ export function ClipboardInterface() {
                     </motion.div>
                 )}
                 </AnimatePresence>
+                </motion.div>
             </div>
 
             {(isDraggingFiles || pendingUploads > 0) && (
