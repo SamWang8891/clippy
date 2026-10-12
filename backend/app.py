@@ -655,6 +655,8 @@ class Session:
         legacy = data.get("visibility")
         instance.is_public = data.get("is_public", legacy in ("public_read", "public_edit"))
         instance.allow_edit = data.get("allow_edit", legacy != "public_read")
+        # 2.2.0 let curl stay switched on in a room kept to its host.
+        instance.allow_curl_upload = instance.allow_curl_upload and instance.allow_edit
         instance.last_activity = datetime.fromisoformat(data["last_activity"])
         # Snapshots written before created_at existed fall back to the last
         # activity rather than "now", which would reshuffle the lobby on restart.
@@ -1617,6 +1619,11 @@ async def toggle_curl(request: ToggleCurlRequest):
     if not session.is_host_token(request.user_id):
         return api_response(HTTPStatus.FORBIDDEN, "Only host can toggle curl upload")
 
+    # A curl upload carries nobody's token, so curl is on only while everyone
+    # may edit; toggle_edit switches it off with editing.
+    if request.allow_curl_upload and not session.allow_edit:
+        return api_response(HTTPStatus.CONFLICT, "Curl upload needs everyone to be able to edit")
+
     session.allow_curl_upload = request.allow_curl_upload
     session.update_activity()
 
@@ -1687,12 +1694,17 @@ async def toggle_edit(request: ToggleEditRequest):
         return api_response(HTTPStatus.FORBIDDEN, "Only host can change who may edit")
 
     session.allow_edit = request.allow_edit
+    curl_goes = not request.allow_edit and session.allow_curl_upload
+    if curl_goes:
+        session.allow_curl_upload = False  # see toggle_curl
     session.update_activity()
 
     await session.broadcast({
         "type": "edit_permission_changed",
         "allow_edit": request.allow_edit,
     })
+    if curl_goes:
+        await session.broadcast({"type": "curl_permission_changed", "allow_curl_upload": False})
 
     return api_response(HTTPStatus.OK, "Edit permission updated", {"success": True})
 

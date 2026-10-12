@@ -39,7 +39,7 @@ Tired of sharing text / files across different computers? Try this clippy!
 - **Real-time collaboration**: See blocks appear instantly when other users create them
 - **File uploads**: Support for small file uploads. Drop one or several files anywhere on the session page and they upload straight away — no need to open the composer first
 - **Image previews**: Uploaded images are decrypted in the browser and shown as thumbnails
-- **Curl upload**: Upload text or files from the terminal — host can enable/disable per session
+- **Curl upload**: Upload text or files from the terminal — host can enable/disable per session. It works only while everyone can edit, so turning it on with the pencil off offers to open editing first, and turning the pencil off turns curl off
   ```bash
   curl -d 'hello' https://your-host/u/SESSION_ID
   curl -F f=@file.txt https://your-host/u/SESSION_ID
