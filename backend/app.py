@@ -247,6 +247,7 @@ class SessionInfo(BaseModel):
     allow_curl_upload: bool
     visibility: Visibility
     host_id: str
+    order_version: int
 
 
 class CreateSessionRequest(BaseModel):
@@ -380,6 +381,10 @@ class Session:
         # Secret member token -> public user id. Never serialized to clients.
         self.tokens: dict[str, str] = {host_token: host_id}
         self.blocks: dict[str, Block] = {}
+        # Moves so far. Every order sent out carries it, so a client can tell an
+        # order it has already moved past from a newer one. Not persisted:
+        # clients read it afresh with the session when they reconnect.
+        self.order_version = 0
         self.block_bytes: dict[str, int] = {}  # block_id -> byte size on disk
         self.total_bytes = 0
         # Bytes promised to in-flight uploads that have not yet been committed,
@@ -529,6 +534,7 @@ class Session:
         order = [bid for bid in self.blocks if bid != block_id]
         order.insert(order.index(after_id) + 1 if after_id else 0, block_id)
         self.blocks = {bid: self.blocks[bid] for bid in order}
+        self.order_version += 1
         self.update_activity()
 
     def delete_block(self, block_id: str):
@@ -1334,6 +1340,7 @@ async def get_session(connection_id: str, request: Request):
         allow_curl_upload=session.allow_curl_upload,
         visibility=session.visibility,
         host_id=next((u.id for u in session.users.values() if u.is_host), ""),
+        order_version=session.order_version,
     )
 
     return api_response(
@@ -1977,11 +1984,11 @@ async def move_block(request: MoveBlockRequest):
         return api_response(HTTPStatus.NOT_FOUND, "Anchor block not found")
 
     session.move_block(request.block_id, request.after_id)
-    order = list(session.blocks)
+    moved = {"order": list(session.blocks), "version": session.order_version}
 
-    await session.broadcast({"type": "blocks_reordered", "order": order})
+    await session.broadcast({"type": "blocks_reordered", **moved})
 
-    return api_response(HTTPStatus.OK, "Block moved", {"order": order})
+    return api_response(HTTPStatus.OK, "Block moved", moved)
 
 
 @router.delete(

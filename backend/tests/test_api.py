@@ -792,10 +792,12 @@ def test_blocks_move_after_an_anchor_and_the_order_sticks(client):
         return [blk["id"] for blk in blocks]
 
     with client.websocket_connect(f"/ws/{cid}", subprotocols=[guest["user_id"]]) as ws:
-        assert move(host, c, None).json()["data"]["order"] == [c, a, b]
-        assert ws.receive_json() == {"type": "blocks_reordered", "order": [c, a, b]}
-    assert move(guest, c, b).status_code == 200
+        assert move(host, c, None).json()["data"] == {"order": [c, a, b], "version": 1}
+        assert ws.receive_json() == {"type": "blocks_reordered", "order": [c, a, b], "version": 1}
+    assert move(guest, c, b).json()["data"]["version"] == 2
     assert order() == [a, b, c]
+    # A client reading the session afresh learns where the count stands.
+    assert client.get(f"/api/v2/session/{cid}", headers=_auth(host)).json()["data"]["order_version"] == 2
 
     # Bad anchors are refused rather than guessed at.
     assert move(host, a, a).status_code == 404

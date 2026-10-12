@@ -45,6 +45,12 @@ function applyOrder(blocks, order) {
 // The block a block sits right after — what the server takes as its anchor.
 const anchorOf = (ids, id) => ids[ids.indexOf(id) - 1] ?? null;
 
+// Keep `heard` if it is newer than the order in `ref`, by the server's move
+// count: replies and broadcasts travel separately, so either can land late.
+function noteOrder(ref, heard) {
+    if (heard.version > ref.current.version) ref.current = {version: heard.version, order: heard.order};
+}
+
 const COMPOSE_TABS = [
     {id: 'text', label: 'Text'},
     {id: 'code', label: 'Code'},
@@ -97,6 +103,12 @@ export function ClipboardInterface() {
     // from here instead of from a stale closure.
     const blocksRef = useRef(blocks);
     const dragAnchorRef = useRef(null);
+    // Our moves still on the wire, and the newest order the server has told of.
+    // Each broadcast carries the whole order as of its own move, so showing one
+    // while later moves of ours were in flight undid them, and the next arrow
+    // press started a step behind.
+    const pendingMovesRef = useRef(0);
+    const newestOrderRef = useRef({version: 0, order: null});
     useEffect(() => {
         blocksRef.current = blocks;
     }, [blocks]);
@@ -134,6 +146,7 @@ export function ClipboardInterface() {
             setSession(data);
             setUsers(data.users);
             setBlocks(data.blocks);
+            newestOrderRef.current = {version: data.order_version, order: null};
         } catch (err) {
             console.error('Failed to load session:', err);
         }
@@ -212,9 +225,14 @@ export function ClipboardInterface() {
                 setBlocks((prev) => prev.filter((b) => b.id !== message.block_id));
                 break;
 
-            case 'blocks_reordered':
-                setBlocks((prev) => applyOrder(prev, message.order));
+            case 'blocks_reordered': {
+                noteOrder(newestOrderRef, message);
+                // With moves of ours in flight it waits; persistMove shows the
+                // newest order once they have all landed.
+                const {order} = newestOrderRef.current;
+                if (pendingMovesRef.current === 0 && order) setBlocks((prev) => applyOrder(prev, order));
                 break;
+            }
 
             case 'block_updated':
                 setBlocks((prev) => prev.map((b) => b.id === message.block.id ? message.block : b));
@@ -532,14 +550,21 @@ export function ClipboardInterface() {
         }
     };
 
-    // The order is shown at once; a refused move reloads the server's.
+    // The order is shown at once. When the last move in flight lands, the
+    // newest order the server has told of is shown: ours, unless someone else
+    // moved something meanwhile. A refused move reloads the server's.
     const persistMove = async (blockId, afterId) => {
+        pendingMovesRef.current += 1;
         try {
-            await moveBlock(sessionData.connection_id, sessionData.user_id, blockId, afterId);
+            noteOrder(newestOrderRef, await moveBlock(sessionData.connection_id, sessionData.user_id, blockId, afterId));
         } catch (err) {
             toast.error('Failed to move: ' + err.message);
             loadSession();
+        } finally {
+            pendingMovesRef.current -= 1;
         }
+        const {order} = newestOrderRef.current;
+        if (pendingMovesRef.current === 0 && order) setBlocks((prev) => applyOrder(prev, order));
     };
 
     // Reorder calls this on every swap mid-drag; only the drop is sent.
