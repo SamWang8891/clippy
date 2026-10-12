@@ -2,6 +2,9 @@ import React, {useEffect, useRef, useState} from 'react';
 import {enterSession, getConnectionIdRules, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
 import {PublicSessions} from './PublicSessions';
+import {IconButton} from './IconButton';
+import {ArrowRight} from './animate-ui/icons/arrow-right';
+import {Layers} from './animate-ui/icons/layers';
 import './SessionEntry.css';
 
 const NAME_STORAGE_KEY = 'clippy_user_name';
@@ -172,7 +175,11 @@ export function SessionEntry() {
     return (
         <div className="entry">
             <header className="entry-head">
-                <h1 className="entry-word">Clippy</h1>
+                <h1 className="entry-word">
+                    {/* The stack fans out once as the page settles in. */}
+                    <Layers className="entry-mark" size={32} animate="default-loop" delay={260} aria-hidden="true" />
+                    Clippy
+                </h1>
                 <p className="entry-sub">Secure collaborative clipboard.</p>
             </header>
 
@@ -197,13 +204,16 @@ export function SessionEntry() {
                         disabled={loading}
                     />
                 </div>
-                <button
+                <IconButton
+                    icon={ArrowRight}
+                    size={18}
+                    iconEnd
                     className="entry-submit"
                     type="submit"
                     disabled={loading || idIncomplete}
                 >
                     {loading ? 'Connecting…' : 'Connect'}
-                </button>
+                </IconButton>
             </form>
 
             {error && (

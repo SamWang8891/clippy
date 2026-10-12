@@ -4,6 +4,9 @@ import {useConfirm} from '../context/ConfirmContext';
 import {useToast} from '../context/ToastContext';
 import {useTheme} from '../hooks/useTheme';
 import {destroySession, toggleCurl, toggleJoin, transferHost} from '../utils/api';
+import {IconButton} from './IconButton';
+import {Copy} from './animate-ui/icons/copy';
+import {X} from './animate-ui/icons/x';
 import './Menu.css';
 
 const APP_VERSION = `v${__APP_VERSION__}`;
@@ -111,16 +114,13 @@ export function Menu({session, users, currentUser, onClose}) {
             <div className="menu-panel" role="dialog" aria-label="Menu">
                 <div className="menu-head">
                     <h2 className="menu-title">Menu</h2>
-                    <button
-                        type="button"
+                    <IconButton
+                        icon={X}
+                        size={16}
                         className="menu-close"
                         onClick={onClose}
                         aria-label="Close menu"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="currentColor" aria-hidden="true">
-                            <path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/>
-                        </svg>
-                    </button>
+                    />
                 </div>
 
                 {isHost && (
@@ -179,36 +179,28 @@ export function Menu({session, users, currentUser, onClose}) {
                                     <div className="menu-curl-label">Upload text</div>
                                     <div className="menu-curl-cmd">
                                         <code>{curlCommands.text}</code>
-                                        <button
-                                            type="button"
+                                        <IconButton
+                                            icon={Copy}
+                                            size={14}
                                             className="menu-curl-copy"
                                             onClick={() => handleCopyCurl(curlCommands.text)}
                                             aria-label="Copy text command"
                                             title="Copy"
-                                        >
-                                            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                                <rect x="5" y="5" width="8" height="9" rx="1.5" />
-                                                <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-5A1.5 1.5 0 0 0 3 3.5v7A1.5 1.5 0 0 0 4.5 12H5" />
-                                            </svg>
-                                        </button>
+                                        />
                                     </div>
                                 </div>
                                 <div className="menu-curl-block">
                                     <div className="menu-curl-label">Upload file</div>
                                     <div className="menu-curl-cmd">
                                         <code>{curlCommands.file}</code>
-                                        <button
-                                            type="button"
+                                        <IconButton
+                                            icon={Copy}
+                                            size={14}
                                             className="menu-curl-copy"
                                             onClick={() => handleCopyCurl(curlCommands.file)}
                                             aria-label="Copy file command"
                                             title="Copy"
-                                        >
-                                            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                                <rect x="5" y="5" width="8" height="9" rx="1.5" />
-                                                <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-5A1.5 1.5 0 0 0 3 3.5v7A1.5 1.5 0 0 0 4.5 12H5" />
-                                            </svg>
-                                        </button>
+                                        />
                                     </div>
                                 </div>
                             </div>

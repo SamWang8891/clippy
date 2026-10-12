@@ -22,11 +22,18 @@
 }
 
 .entry-word {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
     font-size: 36px;
     font-weight: 600;
     letter-spacing: -0.03em;
     line-height: 1;
     color: var(--fg);
+}
+
+.entry-mark {
+    flex-shrink: 0;
 }
 
 .entry-sub {
@@ -160,6 +167,10 @@
 }
 
 .entry-submit {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     width: 100%;
     padding: 13px 18px;
     font-size: 15px;

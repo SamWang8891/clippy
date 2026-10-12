@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import {MotionConfig} from 'motion/react';
 import {SessionProvider, useSession} from './context/SessionContext';
 import {ToastProvider} from './context/ToastContext';
 import {ConfirmProvider} from './context/ConfirmContext';
@@ -92,15 +93,19 @@ function AppContent() {
     );
 }
 
+// reducedMotion="user": Motion's icon and press animations stand down for
+// anyone who asked their OS for less motion, as the CSS ones already do.
 function App() {
     return (
-        <SessionProvider>
-            <ToastProvider>
-                <ConfirmProvider>
-                    <AppContent/>
-                </ConfirmProvider>
-            </ToastProvider>
-        </SessionProvider>
+        <MotionConfig reducedMotion="user">
+            <SessionProvider>
+                <ToastProvider>
+                    <ConfirmProvider>
+                        <AppContent/>
+                    </ConfirmProvider>
+                </ToastProvider>
+            </SessionProvider>
+        </MotionConfig>
     );
 }
 

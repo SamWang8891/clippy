@@ -1,6 +1,9 @@
 import React, {useEffect, useRef, useState} from 'react';
 import QRCode from 'qrcode';
 import {useToast} from '../context/ToastContext';
+import {IconButton} from './IconButton';
+import {Copy} from './animate-ui/icons/copy';
+import {X} from './animate-ui/icons/x';
 import './Id.css';
 
 function readQrColors() {
@@ -12,6 +15,13 @@ function readQrColors() {
     const bg = style.getPropertyValue('--bg-elev').trim() || '#ffffff';
     return {dark: fg, light: bg};
 }
+
+// No QR glyph in Animate UI; this one stays still and only gets the press.
+const IconQr = ({size, ...props}) => (
+    <svg xmlns="http://www.w3.org/2000/svg" height={size} viewBox="0 -960 960 960" width={size} fill="currentColor" {...props}>
+        <path d="M120-520v-320h320v320H120Zm80-80h160v-160H200v160Zm-80 480v-320h320v320H120Zm80-80h160v-160H200v160Zm320-320v-320h320v320H520Zm80-80h160v-160H600v160Zm160 480v-80h80v80h-80ZM520-360v-80h80v80h-80Zm80 80v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm80 80v-80h80v80h-80Zm80-80v-80h80v80h-80Zm0-160v-80h80v80h-80Zm80 80v-80h80v80h-80Z"/>
+    </svg>
+);
 
 // Body plus shackle: closed sits square on the box, open swings clear of it.
 const IconLock = ({open}) => (
@@ -89,29 +99,23 @@ export function Id({sessionData, isPublic = false, canToggleVisibility = false, 
     return (
         <div className="id">
             <span className="id-code">{sessionData?.connection_id}</span>
-            <button
-                type="button"
+            <IconButton
+                icon={Copy}
+                size={14}
                 className="id-btn"
                 onClick={handleCopyUrl}
                 aria-label="Copy share URL"
                 title="Copy share URL"
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="currentColor" aria-hidden="true">
-                    <path d="M360-240q-33 0-56.5-23.5T280-320v-480q0-33 23.5-56.5T360-880h360q33 0 56.5 23.5T800-800v480q0 33-23.5 56.5T720-240H360Zm0-80h360v-480H360v480ZM200-80q-33 0-56.5-23.5T120-160v-560h80v560h440v80H200Z"/>
-                </svg>
-            </button>
-            <button
+            />
+            <IconButton
                 ref={qrButtonRef}
-                type="button"
+                icon={IconQr}
+                size={14}
                 className="id-btn"
                 onClick={handleToggleQr}
                 aria-label="Show QR code"
                 title="Show QR code"
-            >
-                <svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="currentColor" aria-hidden="true">
-                    <path d="M120-520v-320h320v320H120Zm80-80h160v-160H200v160Zm-80 480v-320h320v320H120Zm80-80h160v-160H200v160Zm320-320v-320h320v320H520Zm80-80h160v-160H600v160Zm160 480v-80h80v80h-80ZM520-360v-80h80v80h-80Zm80 80v-80h80v80h-80Zm-80 80v-80h80v80h-80Zm80 80v-80h80v80h-80Zm80-80v-80h80v80h-80Zm0-160v-80h80v80h-80Zm80 80v-80h80v80h-80Z"/>
-                </svg>
-            </button>
+            />
             <button
                 type="button"
                 className={`id-btn ${isPublic ? 'is-public' : ''}`}
@@ -132,16 +136,13 @@ export function Id({sessionData, isPublic = false, canToggleVisibility = false, 
                 <div ref={popupRef} className="qr-popup" role="dialog" aria-label="Share QR code">
                     <div className="qr-popup-head">
                         <span className="qr-popup-label">Scan to join</span>
-                        <button
-                            type="button"
+                        <IconButton
+                            icon={X}
+                            size={16}
                             className="qr-popup-close"
                             onClick={() => setShowQrPopup(false)}
                             aria-label="Close"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" height="14" viewBox="0 -960 960 960" width="14" fill="currentColor" aria-hidden="true">
-                                <path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/>
-                            </svg>
-                        </button>
+                        />
                     </div>
                     <div className="qr-popup-body">
                         {qrDataUrl ? (

@@ -1,0 +1,6 @@
+/* Upstream's Tailwind variant `[&_[stroke-dasharray='1px_1px']]:![stroke-dasharray:1px_0px]`,
+   written out: once a `path` animation has drawn a stroke in full, motion
+   leaves a 1px-on/1px-off dash behind; this closes the gaps. */
+.animate-icon-path [stroke-dasharray='1px 1px'] {
+    stroke-dasharray: 1px 0px !important;
+}

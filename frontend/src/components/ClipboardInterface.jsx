@@ -18,6 +18,10 @@ import {viewTransition} from '../utils/motion';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
 import {LinedTextarea} from './LinedTextarea';
+import {IconButton, useIntro} from './IconButton';
+import {Layers} from './animate-ui/icons/layers';
+import {Plus} from './animate-ui/icons/plus';
+import {Upload} from './animate-ui/icons/upload';
 import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
@@ -41,6 +45,7 @@ export function ClipboardInterface() {
     const [newBlockType, setNewBlockType] = useState('text');
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [pendingUploads, setPendingUploads] = useState(0);
+    const brandIntro = useIntro(900);
 
     useEffect(() => {
         if (!sessionData?.connection_id) return;
@@ -404,9 +409,14 @@ export function ClipboardInterface() {
         <div className="desk">
             <header className="desk-head">
                 <div className="desk-row desk-row-top">
-                    <button className="desk-brand" onClick={handleLogoClick} type="button">
+                    <IconButton
+                        icon={Layers}
+                        animate={brandIntro && 'default-loop'}
+                        className="desk-brand"
+                        onClick={handleLogoClick}
+                    >
                         Clippy
-                    </button>
+                    </IconButton>
 
                     <div className="desk-meta">
                         <span className={`desk-status ${isConnected ? 'is-live' : 'is-off'}`}>
@@ -508,15 +518,21 @@ export function ClipboardInterface() {
                             />}
                     </div>
                 ) : (
-                    <button className="compose-open" onClick={() => setIsCreating(true)} type="button">
+                    <IconButton
+                        icon={Plus}
+                        size={20}
+                        className="compose-open"
+                        onClick={() => setIsCreating(true)}
+                    >
                         New item
-                    </button>
+                    </IconButton>
                 )}
             </div>
 
             {(isDraggingFiles || pendingUploads > 0) && (
                 <div className="desk-drop" role="status">
                     <div className="desk-drop-card">
+                        <Upload size={18} animate="default-loop" loop aria-hidden="true" />
                         {pendingUploads > 0
                             ? `Uploading… ${pendingUploads} left`
                             : 'Drop files to upload'}
@@ -704,6 +720,7 @@ function FileUploadForm({onSubmit}) {
                     </div>
                 ) : (
                     <div className="compose-drop-idle">
+                        <Upload size={22} animate={dragging} aria-hidden="true" />
                         Drop a file or click to browse
                     </div>
                 )}

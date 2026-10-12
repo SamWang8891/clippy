@@ -7,50 +7,16 @@ import {decrypt, decryptToBytes} from '../utils/encryption';
 import {fetchBlockCiphertext, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock, parseBlockContent} from '../utils/codeBlock';
 import {LinedTextarea} from './LinedTextarea';
+import {IconButton} from './IconButton';
+import {Copy} from './animate-ui/icons/copy';
+import {Download} from './animate-ui/icons/download';
+import {Link} from './animate-ui/icons/link';
+import {Pen} from './animate-ui/icons/pen';
+import {RefreshCcw} from './animate-ui/icons/refresh-ccw';
+import {Trash2} from './animate-ui/icons/trash-2';
 import './BlockItem.css';
 
 const CODE_SIGNATURE = /[{};=]|=>|->|^\s*(import|from|const|let|var|def|func|class|function|return|if|for|while|public|private|export)\b|\n\s{2,}\S/m;
-
-const IconCopy = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <rect x="5" y="5" width="8" height="9" rx="1.5" />
-        <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-5A1.5 1.5 0 0 0 3 3.5v7A1.5 1.5 0 0 0 4.5 12H5" />
-    </svg>
-);
-
-const IconEdit = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M11.2 2.8a1.6 1.6 0 0 1 2.3 2.3L5.5 13.1l-3 .7.7-3L11.2 2.8z" />
-    </svg>
-);
-
-const IconTrash = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M2.5 4.5h11M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4 4.5l.7 8.3a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.3" />
-        <path d="M6.75 7.25v4M9.25 7.25v4" />
-    </svg>
-);
-
-const IconDownload = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M8 2.5v8M4.5 7l3.5 3.5L11.5 7" />
-        <path d="M2.75 12.5v.75a1 1 0 0 0 1 1h8.5a1 1 0 0 0 1-1v-.75" />
-    </svg>
-);
-
-const IconReplace = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M3 6.5A4.5 4.5 0 0 1 11 4M13 9.5A4.5 4.5 0 0 1 5 12" />
-        <path d="M11 2v2.5h-2.5M5 14v-2.5h2.5" />
-    </svg>
-);
-
-const IconRaw = (props) => (
-    <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
-        <path d="M6.5 9.5a3 3 0 0 0 4.2.4l2-2a3 3 0 0 0-4.2-4.2L7.2 5" />
-        <path d="M9.5 6.5a3 3 0 0 0-4.2-.4l-2 2a3 3 0 0 0 4.2 4.2L8.8 11" />
-    </svg>
-);
 
 // Uploads are stored as opaque ciphertext with no content type, so the file
 // name is all there is to go on — and a Blob needs a real type or the browser
@@ -463,71 +429,60 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                 <div className="block-actions">
                     {block.type === 'text' && !isDecrypting && (
                         <>
-                            <button
-                                type="button"
+                            <IconButton
+                                icon={Copy}
                                 onClick={handleCopy}
                                 className="block-action"
                                 aria-label="Copy"
                                 title="Copy"
-                            >
-                                <IconCopy />
-                            </button>
-                            <button
-                                type="button"
+                            />
+                            <IconButton
+                                icon={Link}
                                 onClick={handleGetRawLink}
                                 className="block-action"
                                 disabled={isGeneratingRaw}
                                 aria-label="Raw link"
                                 title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
-                            >
-                                <IconRaw />
-                            </button>
+                            />
                             {onUpdateText && (
-                                <button
-                                    type="button"
+                                <IconButton
+                                    icon={Pen}
                                     onClick={handleStartEdit}
                                     className="block-action"
                                     aria-label="Edit"
                                     title="Edit"
-                                >
-                                    <IconEdit />
-                                </button>
+                                />
                             )}
                         </>
                     )}
                     {block.type === 'file' && (
                         <>
-                            <button
-                                type="button"
+                            <IconButton
+                                icon={Download}
                                 onClick={handleDownload}
                                 className="block-action"
                                 aria-label="Download"
                                 title="Download"
-                            >
-                                <IconDownload />
-                            </button>
-                            <button
-                                type="button"
+                            />
+                            <IconButton
+                                icon={Link}
                                 onClick={handleGetRawLink}
                                 className="block-action"
                                 disabled={isGeneratingRaw}
                                 aria-label="Raw link"
                                 title={isGeneratingRaw ? 'Generating…' : 'Raw link'}
-                            >
-                                <IconRaw />
-                            </button>
+                            />
                             {onReplaceFile && (
                                 <>
-                                    <button
-                                        type="button"
+                                    <IconButton
+                                        icon={RefreshCcw}
+                                        animation="rotate"
                                         onClick={handlePickReplacement}
                                         className="block-action"
                                         disabled={isReplacing}
                                         aria-label={isReplacing ? 'Uploading' : 'Replace'}
                                         title={isReplacing ? 'Uploading…' : 'Replace'}
-                                    >
-                                        <IconReplace />
-                                    </button>
+                                    />
                                     <input
                                         ref={fileInputRef}
                                         type="file"
@@ -538,15 +493,13 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                             )}
                         </>
                     )}
-                    <button
-                        type="button"
+                    <IconButton
+                        icon={Trash2}
                         onClick={() => onDelete(block.id)}
                         className="block-action is-danger"
                         aria-label="Delete"
                         title="Delete"
-                    >
-                        <IconTrash />
-                    </button>
+                    />
                 </div>
             )}
         </article>

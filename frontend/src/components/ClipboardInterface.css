@@ -33,6 +33,9 @@
 }
 
 .desk-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     font-size: 22px;
     font-weight: 600;
     letter-spacing: -0.02em;
@@ -201,7 +204,10 @@
 }
 
 .compose-open {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
     width: 100%;
     padding: 22px;
     font-size: 16px;
@@ -363,6 +369,10 @@
 }
 
 .compose-drop-idle {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
     font-size: 16px;
     color: var(--fg-muted);
 }
@@ -404,6 +414,9 @@
 }
 
 .desk-drop-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 18px 26px;
     font-size: 15px;
     font-weight: 500;
