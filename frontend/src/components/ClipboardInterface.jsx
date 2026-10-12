@@ -742,10 +742,11 @@ export function ClipboardInterface() {
                         size={20}
                         className="compose-open"
                         onClick={() => setIsCreating(true)}
-                        title="New item (N)"
                         aria-keyshortcuts="N"
                     >
                         New item
+                        {/* aria-hidden: aria-keyshortcuts already says it. */}
+                        <kbd className="compose-open-key" aria-hidden="true">N</kbd>
                     </IconButton>
                 )}
             </div>

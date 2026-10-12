@@ -225,6 +225,26 @@
     border-color: var(--fg);
 }
 
+.compose-open-key {
+    padding: 1px 7px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1.5;
+    color: var(--fg-subtle);
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+}
+
+/* No keyboard to press it with. */
+@media (hover: none) {
+    .compose-open-key {
+        display: none;
+    }
+}
+
 .compose {
     position: relative;
     display: flex;
