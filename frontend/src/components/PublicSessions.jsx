@@ -1,6 +1,8 @@
 import React, {useEffect, useState} from 'react';
 import {getPublicSessions} from '../utils/api';
-import {getWebSocketUrl} from '../utils/config';
+import {AnimatePresence, motion} from 'motion/react';
+import {configReady, getWebSocketUrl} from '../utils/config';
+import {LoaderCircle} from './animate-ui/icons/loader-circle';
 import {formatClock} from '../utils/time';
 import './PublicSessions.css';
 
@@ -17,6 +19,10 @@ const TICK_MS = 30000;
  */
 function useLobby() {
     const [sessions, setSessions] = useState([]);
+    // Until the first answer, from either the snapshot or the socket. A failed
+    // snapshot counts too: the list is optional, and a spinner that never
+    // stops would be worse than no list.
+    const [loaded, setLoaded] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
@@ -30,7 +36,10 @@ function useLobby() {
             .then((initial) => {
                 if (!cancelled && !live) setSessions(initial);
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+                if (!cancelled) setLoaded(true);
+            });
 
         const connect = () => {
             if (cancelled) return;
@@ -53,6 +62,7 @@ function useLobby() {
                 if (message.type === 'public_sessions') {
                     live = true;
                     setSessions(message.sessions ?? []);
+                    setLoaded(true);
                 }
             };
 
@@ -61,7 +71,7 @@ function useLobby() {
             };
         };
 
-        connect();
+        configReady().then(connect);
 
         return () => {
             cancelled = true;
@@ -73,7 +83,7 @@ function useLobby() {
         };
     }, []);
 
-    return sessions;
+    return {sessions, loaded};
 }
 
 function useTick(intervalMs) {
@@ -100,13 +110,34 @@ function formatRelative(iso) {
 }
 
 export function PublicSessions({onJoin, disabled}) {
-    const sessions = useLobby();
+    const {sessions, loaded} = useLobby();
     useTick(TICK_MS);
 
-    // Nothing published means nothing to show — the section itself appears and
-    // disappears with the rooms.
-    if (sessions.length === 0) return null;
+    // The spinner holds the list's place while it loads, so the page around it
+    // is drawn once and never shifts. Nothing published means nothing to show:
+    // the section appears and disappears with the rooms.
+    return (
+        <AnimatePresence mode="wait" initial={false}>
+            {!loaded ? (
+                <motion.div
+                    key="loading"
+                    className="lobby-loading"
+                    role="status"
+                    aria-label="Loading"
+                    exit={{opacity: 0, transition: {duration: 0.12}}}
+                >
+                    <LoaderCircle size={18} animate aria-hidden="true" />
+                </motion.div>
+            ) : sessions.length > 0 ? (
+                <motion.div key="list" initial={{opacity: 0}} animate={{opacity: 1}} transition={{duration: 0.18}}>
+                    <LobbyList sessions={sessions} onJoin={onJoin} disabled={disabled} />
+                </motion.div>
+            ) : null}
+        </AnimatePresence>
+    );
+}
 
+function LobbyList({sessions, onJoin, disabled}) {
     return (
         <section className="lobby" aria-label="Public connections">
             <h2 className="lobby-title">Public Clippys</h2>

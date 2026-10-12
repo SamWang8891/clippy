@@ -22,6 +22,7 @@ import {LinedTextarea} from './LinedTextarea';
 import {Select} from './Select';
 import {IconButton, useIntro} from './IconButton';
 import {Layers} from './animate-ui/icons/layers';
+import {LoaderCircle} from './animate-ui/icons/loader-circle';
 import {Plus} from './animate-ui/icons/plus';
 import {Upload} from './animate-ui/icons/upload';
 import {Id} from './Id';
@@ -74,6 +75,15 @@ export function ClipboardInterface() {
     const [notification, setNotification] = useState(null);
     const [isCreating, setIsCreating] = useState(false);
     const composeRef = useRef(null);
+    // Each opening is a new composer. With one fixed key, reopening during
+    // the closing fade made AnimatePresence bring the old card back — a quick
+    // Save then N reopened on the text just saved, ready to be saved twice.
+    const [composeSession, setComposeSession] = useState(0);
+    // A closing card detaches after the new one has attached; only a node
+    // arriving may take the ref, or the live composer would lose it.
+    const setComposeNode = useCallback((node) => {
+        if (node) composeRef.current = node;
+    }, []);
     // Whether the open composer holds anything worth asking about; the forms
     // report it, and the outside-press handler below reads it.
     const composeDirtyRef = useRef(false);
@@ -253,7 +263,7 @@ export function ClipboardInterface() {
 
     // Passed by identity into a ref inside the hook, so re-creating it each
     // render only refreshes that ref — it never re-opens the socket.
-    const {isConnected} = useWebSocket(
+    const {isConnected, hasSettled} = useWebSocket(
         sessionData?.connection_id,
         sessionData?.user_id,
         handleWebSocketMessage,
@@ -264,6 +274,11 @@ export function ClipboardInterface() {
     const showNotification = (text) => {
         setNotification(text);
         setTimeout(() => setNotification(null), 3000);
+    };
+
+    const openComposer = () => {
+        setComposeSession((n) => n + 1);
+        setIsCreating(true);
     };
 
     const closeComposer = () => {
@@ -353,7 +368,7 @@ export function ClipboardInterface() {
             if (document.querySelector('.confirm-dialog, .menu-panel, .qr-popup')) return;
             e.preventDefault();
             if (isCreating) composeRef.current?.querySelector('textarea, input[type="file"]')?.focus();
-            else setIsCreating(true);
+            else openComposer();
         };
         window.addEventListener('keydown', onKeyDown);
         return () => window.removeEventListener('keydown', onKeyDown);
@@ -598,7 +613,9 @@ export function ClipboardInterface() {
                     </IconButton>
 
                     <div className="desk-meta">
-                        <span className={`desk-status ${isConnected ? 'is-live' : 'is-off'}`}>
+                        {/* Held invisible, in place, until the first connection
+                            attempt settles — a refresh flashed "Offline" first. */}
+                        <span className={`desk-status ${isConnected ? 'is-live' : 'is-off'} ${hasSettled ? '' : 'is-pending'}`}>
                             <span className="desk-status-dot" aria-hidden="true" />
                             {isConnected ? 'Live' : 'Offline'}
                         </span>
@@ -642,7 +659,15 @@ export function ClipboardInterface() {
             )}
 
             <div className="desk-body">
-                <div className="desk-count">{countLabel}</div>
+                {/* Until the first load answers, a spinner holds the place of the
+                    count and the list, instead of a brief "No items yet." */}
+                {session ? (
+                    <div className="desk-count">{countLabel}</div>
+                ) : (
+                    <div className="desk-loading" role="status" aria-label="Loading">
+                        <LoaderCircle size={20} animate aria-hidden="true" />
+                    </div>
+                )}
 
                 <Reorder.Group
                     as="div"
@@ -682,9 +707,9 @@ export function ClipboardInterface() {
                     // layout animates the card's height between forms; the
                     // children ride along by position, so text never squashes.
                     <motion.div
-                        key="compose"
+                        key={`compose-${composeSession}`}
                         className="compose"
-                        ref={composeRef}
+                        ref={setComposeNode}
                         layout
                         initial={{opacity: 0, y: 8, scale: 0.985}}
                         animate={{opacity: 1, y: 0, scale: 1}}
@@ -757,7 +782,7 @@ export function ClipboardInterface() {
                             icon={Plus}
                             size={20}
                             className="compose-open"
-                            onClick={() => setIsCreating(true)}
+                            onClick={openComposer}
                             aria-keyshortcuts="N"
                         >
                             New item

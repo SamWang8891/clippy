@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
-import {getWebSocketUrl} from '../utils/config';
+import {configReady, getWebSocketUrl} from '../utils/config';
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -11,6 +11,9 @@ const UNOPENED_CLOSE_LIMIT = 5;
 
 export function useWebSocket(sessionId, userId, onMessage, onAuthRejected, onResync) {
     const [isConnected, setIsConnected] = useState(false);
+    // Nothing is known until the first attempt opens or fails; until then the
+    // page should not claim to be offline.
+    const [hasSettled, setHasSettled] = useState(false);
     const wsRef = useRef(null);
     const reconnectTimeoutRef = useRef(null);
     const pingIntervalRef = useRef(null);
@@ -66,6 +69,7 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected, onRes
                 openedThisAttempt = true;
                 unopenedCloses = 0;
                 setIsConnected(true);
+                setHasSettled(true);
                 // Events published while the socket was down are gone for good,
                 // so a reconnect has to re-read state rather than assume none.
                 if (reconnected) onResyncRef.current?.();
@@ -92,6 +96,7 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected, onRes
 
             wsRef.current.onclose = () => {
                 setIsConnected(false);
+                setHasSettled(true);
                 if (pingIntervalRef.current) {
                     clearInterval(pingIntervalRef.current);
                     pingIntervalRef.current = null;
@@ -112,7 +117,8 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected, onRes
             };
         };
 
-        connect();
+        // The page draws before config.json answers; only the socket waits.
+        configReady().then(connect);
 
         return () => {
             cancelled = true;
@@ -132,5 +138,5 @@ export function useWebSocket(sessionId, userId, onMessage, onAuthRejected, onRes
         };
     }, [sessionId, userId]);
 
-    return {isConnected};
+    return {isConnected, hasSettled};
 }

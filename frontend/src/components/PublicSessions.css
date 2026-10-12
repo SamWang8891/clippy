@@ -1,3 +1,10 @@
+.lobby-loading {
+    display: flex;
+    justify-content: center;
+    padding: 12px 0;
+    color: var(--fg-subtle);
+}
+
 .lobby {
     display: flex;
     flex-direction: column;

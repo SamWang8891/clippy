@@ -13,9 +13,12 @@
  */
 
 import {encrypt} from './encryption';
-import {getBackendUrl} from './config';
+import {configReady, getBackendUrl} from './config';
 
-function getApiBase() {
+// Async so a call made before config.json has answered waits for it, rather
+// than the whole app holding its first paint until it does.
+async function getApiBase() {
+    await configReady();
     return `${getBackendUrl()}/api/v2`;
 }
 
@@ -60,7 +63,7 @@ async function handleApiResponse(response) {
  * @returns {Promise<{length: number, alphabet: string}>}
  */
 export async function getConnectionIdRules() {
-    const response = await fetch(`${getApiBase()}/session/id-length`);
+    const response = await fetch(`${await getApiBase()}/session/id-length`);
     const data = await handleApiResponse(response);
     return {
         length: data.connection_id_length,
@@ -73,7 +76,7 @@ export async function getConnectionIdRules() {
  * makes that call; no ID always creates one under a generated ID.
  */
 export async function enterSession(connectionId, userName) {
-    const response = await fetch(`${getApiBase()}/session/enter`, {
+    const response = await fetch(`${await getApiBase()}/session/enter`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({connection_id: connectionId || null, user_name: userName}),
@@ -82,7 +85,7 @@ export async function enterSession(connectionId, userName) {
 }
 
 export async function joinSession(sessionId, userName) {
-    const response = await fetch(`${getApiBase()}/session/join`, {
+    const response = await fetch(`${await getApiBase()}/session/join`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({connection_id: sessionId, user_name: userName}),
@@ -91,14 +94,14 @@ export async function joinSession(sessionId, userName) {
 }
 
 export async function getSession(sessionId, userId) {
-    const response = await fetch(`${getApiBase()}/session/${encodeURIComponent(sessionId)}`, {
+    const response = await fetch(`${await getApiBase()}/session/${encodeURIComponent(sessionId)}`, {
         headers: authHeaders(userId),
     });
     return handleApiResponse(response);
 }
 
 export async function destroySession(sessionId, userId) {
-    const response = await fetch(`${getApiBase()}/session/destroy`, {
+    const response = await fetch(`${await getApiBase()}/session/destroy`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({connection_id: sessionId, user_id: userId}),
@@ -107,7 +110,7 @@ export async function destroySession(sessionId, userId) {
 }
 
 export async function renameSelf(sessionId, userId, userName) {
-    const response = await fetch(`${getApiBase()}/session/rename`, {
+    const response = await fetch(`${await getApiBase()}/session/rename`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({connection_id: sessionId, user_id: userId, user_name: userName}),
@@ -116,7 +119,7 @@ export async function renameSelf(sessionId, userId, userName) {
 }
 
 export async function transferHost(sessionId, currentHostId, newHostId) {
-    const response = await fetch(`${getApiBase()}/session/transfer_host`, {
+    const response = await fetch(`${await getApiBase()}/session/transfer_host`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -129,7 +132,7 @@ export async function transferHost(sessionId, currentHostId, newHostId) {
 }
 
 export async function toggleJoin(sessionId, userId, allowJoin) {
-    const response = await fetch(`${getApiBase()}/session/toggle_join`, {
+    const response = await fetch(`${await getApiBase()}/session/toggle_join`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -142,7 +145,7 @@ export async function toggleJoin(sessionId, userId, allowJoin) {
 }
 
 export async function toggleCurl(sessionId, userId, allowCurlUpload) {
-    const response = await fetch(`${getApiBase()}/session/toggle_curl`, {
+    const response = await fetch(`${await getApiBase()}/session/toggle_curl`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -156,7 +159,7 @@ export async function toggleCurl(sessionId, userId, allowCurlUpload) {
 
 /** visibility: 'private' | 'public_read' | 'public_edit' */
 export async function setSessionVisibility(sessionId, userId, visibility) {
-    const response = await fetch(`${getApiBase()}/session/visibility`, {
+    const response = await fetch(`${await getApiBase()}/session/visibility`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -170,14 +173,14 @@ export async function setSessionVisibility(sessionId, userId, visibility) {
 
 /** Snapshot of the public lobby; live updates come over the lobby socket. */
 export async function getPublicSessions() {
-    const response = await fetch(`${getApiBase()}/sessions/public`);
+    const response = await fetch(`${await getApiBase()}/sessions/public`);
     const data = await handleApiResponse(response);
     return data.sessions ?? [];
 }
 
 export async function createTextBlock(sessionId, userId, content) {
     const encryptedContent = await encrypt(content);
-    const response = await fetch(`${getApiBase()}/block/create`, {
+    const response = await fetch(`${await getApiBase()}/block/create`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -213,7 +216,7 @@ export async function uploadFileBlock(sessionId, userId, file) {
     const blob = new Blob([encryptedBytes], {type: 'application/octet-stream'});
     formData.append('file', blob, file.name);
 
-    const response = await fetch(`${getApiBase()}/block/upload`, {
+    const response = await fetch(`${await getApiBase()}/block/upload`, {
         method: 'POST',
         body: formData,
     });
@@ -222,7 +225,7 @@ export async function uploadFileBlock(sessionId, userId, file) {
 
 export async function updateTextBlock(sessionId, userId, blockId, content) {
     const encryptedContent = await encrypt(content);
-    const response = await fetch(`${getApiBase()}/block/update`, {
+    const response = await fetch(`${await getApiBase()}/block/update`, {
         method: 'PATCH',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -247,7 +250,7 @@ export async function replaceFileBlock(sessionId, userId, blockId, file) {
     const blob = new Blob([encryptedBytes], {type: 'application/octet-stream'});
     formData.append('file', blob, file.name);
 
-    const response = await fetch(`${getApiBase()}/block/replace`, {
+    const response = await fetch(`${await getApiBase()}/block/replace`, {
         method: 'POST',
         body: formData,
     });
@@ -256,7 +259,7 @@ export async function replaceFileBlock(sessionId, userId, blockId, file) {
 
 /** Place a block right after `afterId`, or first when it is null. */
 export async function moveBlock(sessionId, userId, blockId, afterId) {
-    const response = await fetch(`${getApiBase()}/block/move`, {
+    const response = await fetch(`${await getApiBase()}/block/move`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -270,7 +273,7 @@ export async function moveBlock(sessionId, userId, blockId, afterId) {
 }
 
 export async function deleteBlock(sessionId, userId, blockId) {
-    const response = await fetch(`${getApiBase()}/block/delete`, {
+    const response = await fetch(`${await getApiBase()}/block/delete`, {
         method: 'DELETE',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -287,19 +290,19 @@ export async function deleteBlock(sessionId, userId, blockId) {
  * `<a href>` — every caller already used fetch(), so nothing is lost.
  */
 export async function fetchBlockCiphertext(sessionId, blockId, userId) {
-    const url = `${getApiBase()}/block/download/${encodeURIComponent(sessionId)}/${encodeURIComponent(blockId)}`;
+    const url = `${await getApiBase()}/block/download/${encodeURIComponent(sessionId)}/${encodeURIComponent(blockId)}`;
     const response = await fetch(url, {headers: authHeaders(userId)});
     if (!response.ok) throw new Error(`Download failed (HTTP ${response.status})`);
     return response.text();
 }
 
 export async function getConfig() {
-    const response = await fetch(`${getApiBase()}/config`);
+    const response = await fetch(`${await getApiBase()}/config`);
     return handleApiResponse(response);
 }
 
 export async function createRawTextLink(sessionId, userId, blockId, content) {
-    const response = await fetch(`${getApiBase()}/raw/text`, {
+    const response = await fetch(`${await getApiBase()}/raw/text`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -320,7 +323,7 @@ export async function createRawFileLink(sessionId, userId, blockId, decryptedBlo
     formData.append('original_filename', originalFilename);
     formData.append('file', decryptedBlob, originalFilename);
 
-    const response = await fetch(`${getApiBase()}/raw/file`, {
+    const response = await fetch(`${await getApiBase()}/raw/file`, {
         method: 'POST',
         body: formData,
     });

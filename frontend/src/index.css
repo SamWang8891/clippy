@@ -207,15 +207,6 @@ h1, h2, h3, h4, h5, h6 {
     color: var(--fg);
 }
 
-.app-loading {
-    flex: 1;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    color: var(--fg-muted);
-    font-size: 14px;
-}
-
 .app-footer {
     display: flex;
     align-items: center;

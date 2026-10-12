@@ -1,11 +1,10 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect} from 'react';
 import {MotionConfig} from 'motion/react';
 import {SessionProvider, useSession} from './context/SessionContext';
 import {ToastProvider} from './context/ToastContext';
 import {ConfirmProvider} from './context/ConfirmContext';
 import {SessionEntry} from './components/SessionEntry';
 import {ClipboardInterface} from './components/ClipboardInterface';
-import {initConfig} from './utils/config';
 
 // The id in the URL, if the path looks like one. `/r/<id>/<code>` raw links and
 // anything else with a slash are excluded by the character class.
@@ -16,13 +15,6 @@ function urlSessionId() {
 
 function AppContent() {
     const {sessionData} = useSession();
-    const [isReady, setIsReady] = useState(false);
-
-    useEffect(() => {
-        initConfig()
-            .catch((err) => console.error('Failed to initialize:', err))
-            .finally(() => setIsReady(true));
-    }, []);
 
     // Back and forward move between connections now that the path decides what
     // is open. Everything in the app writes history with replaceState, so this
@@ -43,14 +35,8 @@ function AppContent() {
     // the entry page with an error and no way back to the session still held.
     const resumeId = !inSession && sessionData ? sessionData.connection_id : null;
 
-    if (!isReady) {
-        return (
-            <div className="app-layout">
-                <div className="app-loading">Loading…</div>
-            </div>
-        );
-    }
-
+    // No full-screen loading state: the page draws at once and only what needs
+    // the network waits for it, each in its own place (see configReady).
     return (
         <div className="app-layout">
             {resumeId && (

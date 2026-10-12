@@ -83,6 +83,14 @@
     color: var(--fg-subtle);
 }
 
+.desk-status {
+    transition: opacity 160ms var(--ease);
+}
+
+.desk-status.is-pending {
+    opacity: 0;
+}
+
 .desk-menu-btn {
     width: 36px;
     height: 36px;
@@ -186,6 +194,13 @@
     gap: 16px;
 }
 
+.desk-loading {
+    display: flex;
+    justify-content: center;
+    padding: 24px 0;
+    color: var(--fg-subtle);
+}
+
 .desk-count {
     font-size: 12px;
     font-weight: 500;
@@ -245,6 +260,14 @@
     .compose-open-key {
         display: none;
     }
+}
+
+/* AnimatePresence marks whatever it is fading out with data-motion-pop-id.
+   A leaving composer or block must not take clicks meant for what replaces
+   it — Cancel on a fading card would close the fresh one. */
+.compose[data-motion-pop-id],
+.block[data-motion-pop-id] {
+    pointer-events: none;
 }
 
 .compose {
