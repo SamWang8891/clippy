@@ -1,14 +1,18 @@
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import secrets
 import shutil
 import string
+import time
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from http import HTTPStatus
@@ -73,6 +77,11 @@ MAX_RAW_LINKS_PER_SESSION = int(os.getenv("MAX_RAW_LINKS_PER_SESSION", "50"))
 MAX_CURL_UPLOAD_BYTES = int(os.getenv("MAX_CURL_UPLOAD_MIB", "64")) * 1024 * 1024
 # Serve interactive API docs only when explicitly enabled.
 ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").lower() in ("1", "true", "yes")
+# A new session costs memory and a directory and needs no credential, so one
+# address may only start a few in a short window. Joining is never counted.
+# A limit of 0 turns this off.
+CREATE_RATE_LIMIT = int(os.getenv("CREATE_RATE_LIMIT", "3"))
+CREATE_RATE_WINDOW_SECONDS = float(os.getenv("CREATE_RATE_WINDOW_SECONDS", "15"))
 
 # Wire-format constant, NOT an API version: it is baked into the key derivation
 # and must byte-match KDF_PREFIX in frontend/src/utils/encryption.js. Changing it
@@ -716,7 +725,12 @@ def load_raw_links_sync() -> None:
             logger.warning("Skipping malformed raw links for %s: %s", cid, e)
 
 
-def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> JSONResponse:
+def api_response(
+        status: HTTPStatus,
+        message: str,
+        data: dict | None = None,
+        headers: dict[str, str] | None = None,
+) -> JSONResponse:
     """
     Create a standardized API response with HTTP status code.
 
@@ -724,6 +738,7 @@ def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> 
         status: HTTP status code
         message: Human-readable message
         data: Optional dictionary of response data
+        headers: Optional extra response headers
 
     Returns:
         JSONResponse with consistent structure
@@ -734,7 +749,7 @@ def api_response(status: HTTPStatus, message: str, data: dict | None = None) -> 
     }
     if data is not None:
         content["data"] = data
-    return JSONResponse(status_code=status.value, content=content)
+    return JSONResponse(status_code=status.value, content=content, headers=headers)
 
 
 async def _read_capped(reader, limit: int) -> bytes | None:
@@ -781,6 +796,54 @@ def bearer_token(request: Request) -> str:
 def new_member() -> tuple[str, str]:
     """Return (secret token, public user id) for a new member."""
     return secrets.token_urlsafe(32), uuid.uuid4().hex[:12]
+
+
+def client_address(request: Request) -> str:
+    """The caller's address as the reverse proxy saw it.
+
+    nginx overwrites X-Real-IP on everything it forwards, so the header is
+    believed only when the hop handing it over is on a private network — that
+    is, when it is the proxy. Straight from the internet it is the caller's own
+    claim, and believing it would let anyone pick their rate-limit bucket.
+    """
+    peer = request.client.host if request.client else ""
+    forwarded = request.headers.get("x-real-ip", "").strip()
+    try:
+        from_proxy = ipaddress.ip_address(peer).is_private
+    except ValueError:
+        from_proxy = False
+    return forwarded if forwarded and from_proxy else peer
+
+
+# address -> monotonic times of its recent session creations, oldest first.
+# ponytail: in-process, so it resets on restart and is per worker; fine for the
+# single uvicorn process this ships as.
+creation_log: dict[str, deque[float]] = {}
+
+
+def creation_wait(address: str) -> float:
+    """Seconds until ``address`` may create another session; 0 when it may now."""
+    stamps = creation_log.get(address)
+    if CREATE_RATE_LIMIT <= 0 or not stamps:
+        return 0
+    now = time.monotonic()
+    while stamps and now - stamps[0] >= CREATE_RATE_WINDOW_SECONDS:
+        stamps.popleft()
+    if len(stamps) < CREATE_RATE_LIMIT:
+        return 0
+    return CREATE_RATE_WINDOW_SECONDS - (now - stamps[0])
+
+
+def record_creation(address: str) -> None:
+    creation_log.setdefault(address, deque()).append(time.monotonic())
+
+
+def prune_creation_log() -> None:
+    """Forget addresses whose newest creation has aged out of the window."""
+    now = time.monotonic()
+    for address in [a for a, s in creation_log.items()
+                    if not s or now - s[-1] >= CREATE_RATE_WINDOW_SECONDS]:
+        del creation_log[address]
 
 
 # Paths under /ws that are not sessions. A session named after one would be
@@ -925,6 +988,8 @@ async def cleanup_expired_sessions():
             mark_raw_links_dirty()
             mark_sessions_dirty()
 
+        prune_creation_log()
+
 
 @router.get(
     "/config",
@@ -978,14 +1043,15 @@ async def get_connection_id_length():
     summary="Create New Session",
     description="Create a new collaborative session and become the host"
 )
-async def create_session(request: CreateSessionRequest):
+async def create_session(request: CreateSessionRequest, http_request: Request):
     """
     Create a new collaborative session.
 
     Generates a unique session ID and creates the first user as the host.
     A caller may request its own ID; it still has to match the server's length
     and alphabet, and must not already be taken. If no user name is provided,
-    a random name will be generated.
+    a random name will be generated. Each address may create at most
+    CREATE_RATE_LIMIT sessions per CREATE_RATE_WINDOW_SECONDS.
 
     Returns session ID, user ID, user name, and host status.
     """
@@ -1012,6 +1078,18 @@ async def create_session(request: CreateSessionRequest):
             "Unable to create session: all connection IDs are currently in use. Please try again later."
         )
 
+    # Checked after validation so a typo is reported as a typo, and recorded
+    # only once the session exists so a refused request costs nothing.
+    address = client_address(http_request)
+    wait = creation_wait(address)
+    if wait > 0:
+        seconds = math.ceil(wait)
+        return api_response(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            f"Too many new connections. Try again in {seconds}s.",
+            headers={"Retry-After": str(seconds)},
+        )
+
     token, user_id = new_member()
     # .strip(): a name of pure spaces is truthy, and it rendered as a blank
     # row in the public lobby and a blank entry in the member list.
@@ -1019,6 +1097,7 @@ async def create_session(request: CreateSessionRequest):
 
     session = Session(connection_id, token, user_id, user_name)
     sessions[connection_id] = session
+    record_creation(address)
     mark_sessions_dirty()
 
     return api_response(
@@ -1092,6 +1171,26 @@ async def join_session(request: JoinSessionRequest):
             "is_host": False
         }
     )
+
+
+@router.post(
+    "/session/enter",
+    summary="Join or Create Session",
+    description="Join the session with this ID, or create it when there is none"
+)
+async def enter_session(request: CreateSessionRequest, http_request: Request):
+    """
+    The entry form's single way in: the server decides whether this joins or
+    creates, so the caller never has to know which it wanted. A live ID joins
+    that session; a free one creates it under that ID; no ID creates one under
+    a generated ID. Only the creating branch counts against the rate limit.
+    """
+    requested_id = (request.connection_id or "").strip().lower()
+    if requested_id in sessions:
+        return await join_session(
+            JoinSessionRequest(connection_id=requested_id, user_name=request.user_name)
+        )
+    return await create_session(request, http_request)
 
 
 @router.get(

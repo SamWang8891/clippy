@@ -75,6 +75,74 @@ def test_custom_connection_id_is_honoured_and_validated(client):
         app_module.CONNECTION_ID_LENGTH = len(good)
 
 
+def _enter(client, cid=None, name="Carol"):
+    return client.post("/api/v2/session/enter", json={"connection_id": cid, "user_name": name})
+
+
+def test_enter_joins_a_live_id_and_creates_a_free_one(client):
+    import app as app_module
+
+    created = _enter(client)
+    assert created.status_code == 200, created.text
+    host = created.json()["data"]
+    assert host["is_host"] is True
+
+    joined = _enter(client, host["connection_id"].upper(), name="Dave")
+    assert joined.status_code == 200, joined.text
+    guest = joined.json()["data"]
+    assert guest["connection_id"] == host["connection_id"]
+    assert guest["is_host"] is False
+
+    free = "q" * app_module.CONNECTION_ID_LENGTH
+    named = _enter(client, free).json()["data"]
+    assert named["connection_id"] == free
+    assert named["is_host"] is True
+
+    # A free ID still has to be one the server would hand out a directory for.
+    assert _enter(client, "../abc").status_code == 400
+
+
+def test_creation_is_rate_limited_per_address_but_joining_is_not(client, monkeypatch):
+    import app as app_module
+
+    monkeypatch.setattr(app_module, "CREATE_RATE_LIMIT", 3)
+    monkeypatch.setattr(app_module, "CREATE_RATE_WINDOW_SECONDS", 15)
+
+    hosts = [_create_session(client) for _ in range(3)]
+    r = client.post("/api/v2/session/create", json={})
+    assert r.status_code == 429
+    assert 0 < int(r.headers["retry-after"]) <= 15
+    # The entry form reaches the same create path, so it is held back too...
+    assert _enter(client).status_code == 429
+    # ...but only when it would create: joining is never counted.
+    assert _enter(client, hosts[0]["connection_id"]).status_code == 200
+    _join(client, hosts[1]["connection_id"])
+
+    # Once the oldest creation leaves the window there is room for exactly one.
+    (address,) = app_module.creation_log
+    app_module.creation_log[address][0] -= 15
+    assert _enter(client).status_code == 200
+    assert _enter(client).status_code == 429
+
+
+def test_forwarded_address_is_believed_only_from_the_proxy():
+    from starlette.requests import Request
+
+    import app as app_module
+
+    def address(peer):
+        return app_module.client_address(Request({
+            "type": "http",
+            "client": (peer, 40000),
+            "headers": [(b"x-real-ip", b"203.0.113.9")],
+        }))
+
+    assert address("172.18.0.3") == "203.0.113.9"  # nginx in its own container
+    assert address("127.0.0.1") == "203.0.113.9"  # nginx in the same container
+    # Straight from the internet the header is the caller's own claim.
+    assert address("8.8.8.8") == "8.8.8.8"
+
+
 def test_blank_names_do_not_reach_the_lobby(client):
     r = client.post("/api/v2/session/create", json={"user_name": "   "})
     assert r.status_code == 200

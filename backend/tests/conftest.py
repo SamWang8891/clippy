@@ -24,6 +24,9 @@ os.environ["DATA_DIR"] = str(TMP_DATA_DIR)
 os.environ["MAX_BLOCKS_PER_SESSION"] = "3"
 os.environ["MAX_TEXT_BLOCK_LENGTH"] = "128"
 os.environ["MAX_CURL_UPLOAD_MIB"] = "1"
+# Most tests create sessions far faster than a person would; the limiter has a
+# test of its own that switches it back on.
+os.environ["CREATE_RATE_LIMIT"] = "0"
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -47,5 +50,6 @@ def client():
     # startup restores it, so clearing only the dicts leaks state forward.
     app_module.sessions.clear()
     app_module.raw_links.clear()
+    app_module.creation_log.clear()
     app_module.SESSIONS_FILE.unlink(missing_ok=True)
     app_module.RAW_LINKS_FILE.unlink(missing_ok=True)
