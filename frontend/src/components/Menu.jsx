@@ -1,4 +1,5 @@
 import React, {useState} from 'react';
+import {motion} from 'motion/react';
 import {useSession} from '../context/SessionContext';
 import {useConfirm} from '../context/ConfirmContext';
 import {useToast} from '../context/ToastContext';
@@ -17,6 +18,13 @@ const THEME_OPTIONS = [
     {id: 'light', label: 'Light'},
     {id: 'dark', label: 'Dark'},
 ];
+
+// The panel drops from the corner it is pinned to and lifts back into it on
+// close. A closing overlay stops taking clicks at once, so the page under it
+// answers straight away rather than after the fade.
+const QUICK = {duration: 0.16, ease: [0.2, 0, 0, 1]};
+const FADE = {initial: {opacity: 0}, animate: {opacity: 1}, exit: {opacity: 0, pointerEvents: 'none'}};
+const DROP = {initial: {opacity: 0, y: -6}, animate: {opacity: 1, y: 0}, exit: {opacity: 0, y: -6, pointerEvents: 'none'}};
 
 const CURL_TABS = [
     {id: 'unix', label: 'Linux / macOS'},
@@ -110,16 +118,16 @@ export function Menu({session, users, currentUser, onClose}) {
 
     return (
         <>
-            <div className="menu-overlay" onClick={onClose}/>
-            <div className="menu-panel" role="dialog" aria-label="Menu">
+            <motion.div className="menu-overlay" onClick={onClose} {...FADE} transition={QUICK}/>
+            <motion.div className="menu-panel" role="dialog" aria-label="Settings" {...DROP} transition={QUICK}>
                 <div className="menu-head">
-                    <h2 className="menu-title">Menu</h2>
+                    <h2 className="menu-title">Settings</h2>
                     <IconButton
                         icon={X}
                         size={16}
                         className="menu-close"
                         onClick={onClose}
-                        aria-label="Close menu"
+                        aria-label="Close settings"
                     />
                 </div>
 
@@ -268,7 +276,7 @@ export function Menu({session, users, currentUser, onClose}) {
                         </a>
                     </div>
                 </section>
-            </div>
+            </motion.div>
         </>
     );
 }

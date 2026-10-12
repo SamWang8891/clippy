@@ -683,7 +683,7 @@ export function ClipboardInterface() {
                         <button
                             className={`desk-menu-btn ${showMenu ? 'is-open' : ''}`}
                             onClick={() => setShowMenu(!showMenu)}
-                            aria-label="Menu"
+                            aria-label="Settings"
                             type="button"
                         >
                             <span /><span /><span />
@@ -712,14 +712,17 @@ export function ClipboardInterface() {
                 </div>
             </header>
 
-            {showMenu && (
-                <Menu
-                    session={session}
-                    users={users}
-                    currentUser={currentUser}
-                    onClose={() => setShowMenu(false)}
-                />
-            )}
+            <AnimatePresence>
+                {showMenu && (
+                    <Menu
+                        key="settings"
+                        session={session}
+                        users={users}
+                        currentUser={currentUser}
+                        onClose={() => setShowMenu(false)}
+                    />
+                )}
+            </AnimatePresence>
 
             <div className="desk-body">
                 {/* Until the first load answers, a spinner holds the place of the
