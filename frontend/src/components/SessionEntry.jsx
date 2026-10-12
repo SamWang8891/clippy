@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {enterSession, getConnectionIdRules, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
+import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
 import {PublicSessions} from './PublicSessions';
 import {IconButton} from './IconButton';
 import {ArrowRight} from './animate-ui/icons/arrow-right';
@@ -68,17 +69,14 @@ function ConnectionIdField({inputId, inputRef, value, sanitize, onChange, placeh
                     autoCapitalize="off"
                     autoCorrect="off"
                     spellCheck="false"
-                    // Nothing to remember here; keep the password managers that
-                    // a type=password field attracts out of it. Each vendor has
-                    // its own opt-out and ignores everyone else's. None of them
-                    // covers the browser's own "save password?" prompt — there
-                    // is no supported way to decline that.
-                    autoComplete="off"
-                    data-1p-ignore=""
-                    data-lpignore="true"
-                    data-bwignore="true"
-                    data-protonpass-ignore="true"
-                    data-form-type="other"
+                    // Nothing to remember here, but a type=password field draws
+                    // every password manager. one-time-code is what keeps the
+                    // browser's own out: Chromium's form parser classes such a
+                    // field as not-a-password, so it never offers to save it
+                    // (autocomplete=off is ignored on password fields). The
+                    // extensions each read their own opt-out instead.
+                    autoComplete="one-time-code"
+                    {...NO_PASSWORD_MANAGERS}
                 />
                 <span className="entry-code-echo" aria-hidden="true">{value}</span>
             </div>
@@ -202,6 +200,8 @@ export function SessionEntry() {
                         onChange={(e) => setUserName(e.target.value)}
                         placeholder="Leave blank for assigned name"
                         disabled={loading}
+                        autoComplete="off"
+                        {...NO_PASSWORD_MANAGERS}
                     />
                 </div>
                 <IconButton

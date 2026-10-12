@@ -1,4 +1,5 @@
 import React, {useRef} from 'react';
+import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
 import './LinedTextarea.css';
 
 const INDENT = '  ';
@@ -65,6 +66,8 @@ export function LinedTextarea({value, onChange, code = false, onKeyDown, inputRe
                     onKeyDown={handleKeyDown}
                     rows={1}
                     spellCheck="false"
+                    autoComplete="off"
+                    {...NO_PASSWORD_MANAGERS}
                     {...rest}
                 />
             </div>

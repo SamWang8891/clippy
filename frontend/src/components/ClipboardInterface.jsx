@@ -28,6 +28,7 @@ import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
 import {storeName} from './SessionEntry';
+import {NO_PASSWORD_MANAGERS} from '../utils/autofill';
 import './ClipboardInterface.css';
 
 /**
@@ -689,6 +690,7 @@ function NameEditor({name, onRename}) {
             enterKeyHint="done"
             spellCheck="false"
             autoComplete="off"
+            {...NO_PASSWORD_MANAGERS}
             aria-label="Name"
             autoFocus
         />
