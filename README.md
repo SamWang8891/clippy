@@ -33,8 +33,8 @@ A web-based application that allows users to share text and files in real-time t
 
 Tired of sharing text / files across different computers? Try this clippy!
 
-- **Session-based sharing**: Create or join sessions using short, custom-length IDs. Server-minted IDs leave out `i`, `o`, `e`, `0` and `1`, so an ID survives being read aloud or copied by eye; name your own and any of `a-z0-9` is fair game. The ID field is a password input so the OS drops out of a Chinese IME on focus — the value stays visible
-- **Public Clippys**: Hosts can unlock a session with the padlock beside the QR code to list it on the entry page. The five newest published sessions appear there with name, ID, creation time and last update, and they appear and disappear live over a WebSocket. Everything is private until someone deliberately unlocks it
+- **Session-based sharing**: Type an ID and press Connect — the server decides: a live ID joins that session, a free one creates it under that name, and an empty field creates one with a generated ID. Each address may create 3 sessions per 15 seconds (`CREATE_RATE_LIMIT`, `CREATE_RATE_WINDOW_SECONDS`); joining is never limited. Server-minted IDs leave out `i`, `o`, `e`, `0` and `1`, so an ID survives being read aloud or copied by eye; name your own and any of `a-z0-9` is fair game. The ID field is a password input so the OS drops out of a Chinese IME on focus — the value stays visible
+- **Public Clippys**: The padlock beside the QR code steps a session through three states: private (joining takes the ID), listed read-only (anyone can view and copy, only the host can change anything) and listed editable. The five newest published sessions appear there with name, ID, creation time and last update, and they appear and disappear live over a WebSocket. Everything is private until someone deliberately unlocks it
 - **Encrypted payloads**: Each session uses a 256-bit AES-GCM key derived client-side from the connection ID (SHA-256 KDF). All block content is encrypted before it leaves the browser, so the backend only ever sees ciphertext. The server issues the ID and could derive the key too — this is encrypted-at-rest and on-the-wire, not strict end-to-end against a malicious server
 - **Real-time collaboration**: See blocks appear instantly when other users create them
 - **File uploads**: Support for small file uploads. Drop one or several files anywhere on the session page and they upload straight away — no need to open the composer first
@@ -46,11 +46,11 @@ Tired of sharing text / files across different computers? Try this clippy!
   ```
 - **Raw links**: Generate public short links to share decrypted text or files with anyone (e.g. `https://your-host/r/SESSION_ID/CODE`)
 - **User management**:
-    - Custom or random user names, remembered in local storage between visits
+    - Custom or random user names, remembered in local storage between visits; click your name in the header to rename yourself mid-session
     - Host can transfer host rights to other users
     - Host can control whether new users can join
 - **Session persistence**: Sessions remain active until destroyed by host or after 1 hour of inactivity. When one expires or is destroyed, the tab returns to the dashboard on its own instead of stopping at a warning
-- **Block system**: Add and delete text or file blocks, similar to Jupyter notebooks
+- **Block system**: Add, edit and delete text or file blocks, similar to Jupyter notebooks, and drag them into order by the grip on their right edge (or move them with the arrow keys on it)
 
 ---
 
