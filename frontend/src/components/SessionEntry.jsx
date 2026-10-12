@@ -1,5 +1,5 @@
-import React, {useEffect, useState} from 'react';
-import {createSession, getConnectionIdRules, joinSession} from '../utils/api';
+import React, {useEffect, useRef, useState} from 'react';
+import {enterSession, getConnectionIdRules, joinSession} from '../utils/api';
 import {useSession} from '../context/SessionContext';
 import {PublicSessions} from './PublicSessions';
 import './SessionEntry.css';
@@ -30,8 +30,7 @@ function storeName(name) {
 }
 
 /**
- * The one connection-ID input, used by both tabs so New and Join cannot drift
- * apart.
+ * The connection-ID input.
  *
  * It is a password field on purpose. Nothing here is secret — that is the only
  * control macOS and Windows drop out of a Chinese IME for, and no web API
@@ -46,13 +45,14 @@ function storeName(name) {
  * Trade-off: assistive tech announces this as a password field and will not
  * read the characters back.
  */
-function ConnectionIdField({inputId, value, sanitize, onChange, placeholder, disabled, required}) {
+function ConnectionIdField({inputId, inputRef, value, sanitize, onChange, placeholder, disabled}) {
     const apply = (e) => onChange(sanitize(e.target.value));
     return (
         <div className="entry-field">
             <label htmlFor={inputId}>Connection ID</label>
             <div className="entry-code-wrap">
                 <input
+                    ref={inputRef}
                     id={inputId}
                     className="entry-input-mono entry-input-code"
                     type="password"
@@ -60,7 +60,6 @@ function ConnectionIdField({inputId, value, sanitize, onChange, placeholder, dis
                     onChange={apply}
                     onCompositionEnd={apply}
                     placeholder={placeholder}
-                    required={required}
                     disabled={disabled}
                     lang="en"
                     autoCapitalize="off"
@@ -85,13 +84,12 @@ function ConnectionIdField({inputId, value, sanitize, onChange, placeholder, dis
 }
 
 export function SessionEntry() {
-    const [mode, setMode] = useState('create');
     const [userName, setUserName] = useState(readStoredName);
     const [sessionId, setSessionId] = useState('');
-    const [customId, setCustomId] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const [idRules, setIdRules] = useState(DEFAULT_ID_RULES);
+    const idInputRef = useRef(null);
     const {setSessionData} = useSession();
 
     // Persisted on every change, including when cleared: an empty field is a
@@ -104,13 +102,22 @@ export function SessionEntry() {
         getConnectionIdRules().then(setIdRules).catch(() => {});
     }, []);
 
+    // The ID is what nearly everyone came to type. Refocused whenever a request
+    // settles too — a disabled field drops focus, so a rejected ID would
+    // otherwise leave the caret nowhere.
+    useEffect(() => {
+        if (!loading) idInputRef.current?.focus();
+    }, [loading]);
+
+    // Arriving at /<id> only ever joins. A link that outlived its session, or
+    // a refresh after it expired, must not quietly mint a new room in its
+    // place; the ID stays in the field, one press away from creating it.
     useEffect(() => {
         const pathname = window.location.pathname;
         const urlSessionId = pathname.replace('/', '').trim().toLowerCase();
 
         const pattern = new RegExp(`^[a-z0-9]{${idRules.length}}$`);
         if (urlSessionId && urlSessionId.length === idRules.length && pattern.test(urlSessionId)) {
-            setMode('join');
             setSessionId(urlSessionId);
             setLoading(true);
             setError('');
@@ -126,12 +133,11 @@ export function SessionEntry() {
         }
     }, [idRules.length, setSessionData]);
 
-    const handleCreate = async (e) => {
-        e.preventDefault();
+    const connect = async (request) => {
         setLoading(true);
         setError('');
         try {
-            const data = await createSession(userName || null, customId || null);
+            const data = await request();
             syncUrl(data.connection_id);
             setSessionData(data);
         } catch (err) {
@@ -141,24 +147,16 @@ export function SessionEntry() {
         }
     };
 
-    const joinById = async (id) => {
-        setLoading(true);
-        setError('');
-        try {
-            const data = await joinSession(id, userName || null);
-            syncUrl(data.connection_id);
-            setSessionData(data);
-        } catch (err) {
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
+    // Whether this joins or creates is the server's call: a live ID joins it,
+    // a free one creates it, a blank one creates a room under a generated ID.
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        connect(() => enterSession(sessionId || null, userName || null));
     };
 
-    const handleJoin = (e) => {
-        e.preventDefault();
-        joinById(sessionId);
-    };
+    // A lobby row is a room someone published; if it has gone in the
+    // meantime, saying so beats creating an empty one under its name.
+    const joinById = (id) => connect(() => joinSession(id, userName || null));
 
     // Only what the server will accept survives being typed or pasted.
     const sanitizeId = (value) => value
@@ -169,7 +167,7 @@ export function SessionEntry() {
         .slice(0, idRules.length);
 
     const placeholder = '_'.repeat(idRules.length);
-    const customIdIncomplete = customId.length > 0 && customId.length !== idRules.length;
+    const idIncomplete = sessionId.length > 0 && sessionId.length !== idRules.length;
 
     return (
         <div className="entry">
@@ -178,89 +176,35 @@ export function SessionEntry() {
                 <p className="entry-sub">Secure collaborative clipboard.</p>
             </header>
 
-            <div className="entry-tabs" role="tablist" data-mode={mode}>
-                <button
-                    role="tab"
-                    aria-selected={mode === 'create'}
-                    className={`entry-tab ${mode === 'create' ? 'is-active' : ''}`}
-                    onClick={() => setMode('create')}
-                    type="button"
-                >
-                    New
-                </button>
-                <button
-                    role="tab"
-                    aria-selected={mode === 'join'}
-                    className={`entry-tab ${mode === 'join' ? 'is-active' : ''}`}
-                    onClick={() => setMode('join')}
-                    type="button"
-                >
-                    Join
-                </button>
-            </div>
-
-            {/* Deliberately unkeyed: both tabs render the same three controls, so
-                React reuses them in place and only the highlight travels. */}
-            {mode === 'create' ? (
-                <form onSubmit={handleCreate} className="entry-form">
-                    <ConnectionIdField
-                        inputId="entry-custom-id"
-                        value={customId}
-                        sanitize={sanitizeId}
-                        onChange={setCustomId}
-                        placeholder={placeholder}
+            <form onSubmit={handleSubmit} className="entry-form">
+                <ConnectionIdField
+                    inputId="entry-id"
+                    inputRef={idInputRef}
+                    value={sessionId}
+                    sanitize={sanitizeId}
+                    onChange={setSessionId}
+                    placeholder={placeholder}
+                    disabled={loading}
+                />
+                <div className="entry-field">
+                    <label htmlFor="entry-name">Name <span className="entry-optional">optional</span></label>
+                    <input
+                        id="entry-name"
+                        type="text"
+                        value={userName}
+                        onChange={(e) => setUserName(e.target.value)}
+                        placeholder="Leave blank for assigned name"
                         disabled={loading}
                     />
-                    <div className="entry-field">
-                        <label htmlFor="entry-name">Name <span className="entry-optional">optional</span></label>
-                        <input
-                            id="entry-name"
-                            type="text"
-                            value={userName}
-                            onChange={(e) => setUserName(e.target.value)}
-                            placeholder="Leave blank for assigned name"
-                            disabled={loading}
-                        />
-                    </div>
-                    <button
-                        className="entry-submit"
-                        type="submit"
-                        disabled={loading || customIdIncomplete}
-                    >
-                        {loading ? 'Creating…' : 'Create connection'}
-                    </button>
-                </form>
-            ) : (
-                <form onSubmit={handleJoin} className="entry-form">
-                    <ConnectionIdField
-                        inputId="entry-id"
-                        value={sessionId}
-                        sanitize={sanitizeId}
-                        onChange={setSessionId}
-                        placeholder={placeholder}
-                        disabled={loading}
-                        required
-                    />
-                    <div className="entry-field">
-                        <label htmlFor="entry-name-join">Name <span className="entry-optional">optional</span></label>
-                        <input
-                            id="entry-name-join"
-                            type="text"
-                            value={userName}
-                            onChange={(e) => setUserName(e.target.value)}
-                            placeholder="Leave blank for assigned name"
-                            disabled={loading}
-                        />
-                    </div>
-                    <button
-                        className="entry-submit"
-                        type="submit"
-                        disabled={loading || sessionId.length !== idRules.length}
-                    >
-                        {loading ? 'Joining…' : 'Join connection'}
-                    </button>
-                </form>
-            )}
+                </div>
+                <button
+                    className="entry-submit"
+                    type="submit"
+                    disabled={loading || idIncomplete}
+                >
+                    {loading ? 'Connecting…' : 'Connect'}
+                </button>
+            </form>
 
             {error && (
                 <div className="entry-error" role="alert">

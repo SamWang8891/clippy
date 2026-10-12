@@ -68,11 +68,15 @@ export async function getConnectionIdRules() {
     };
 }
 
-export async function createSession(userName, connectionId) {
-    const response = await fetch(`${getApiBase()}/session/create`, {
+/**
+ * Join the session with this ID, or create it when there is none. The server
+ * makes that call; no ID always creates one under a generated ID.
+ */
+export async function enterSession(connectionId, userName) {
+    const response = await fetch(`${getApiBase()}/session/enter`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({user_name: userName, connection_id: connectionId || null}),
+        body: JSON.stringify({connection_id: connectionId || null, user_name: userName}),
     });
     return handleApiResponse(response);
 }
