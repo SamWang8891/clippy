@@ -103,6 +103,9 @@ function formatTime(iso) {
 }
 
 const CAN_HOVER = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(hover: hover)').matches);
+// Quick and settled rather than springy: a reorder should read as a snap.
+const SLIDE = {duration: 0.16, ease: [0.2, 0, 0, 1]};
+const SETTLE = {bounceStiffness: 900, bounceDamping: 60};
 
 // canEdit off means a read-only room: copying and downloading stay, and every
 // control that writes is gone — raw links included, since each one is a copy
@@ -137,7 +140,13 @@ export function BlockItem({
     const handleRef = useRef(null);
     const editInputRef = useRef(null);
     const dragControls = useDragControls();
-    const [isDragging, setIsDragging] = useState(false);
+    // From pickup until it has settled into its slot, not just while held:
+    // the drop's snap and the neighbours' slide overlap it otherwise.
+    const [isLifted, setIsLifted] = useState(false);
+    // The entrance runs once and is then taken off. Moving a block down
+    // re-inserts its node, and a re-inserted node restarts its CSS
+    // animations — the block blinked out and faded back in on every move.
+    const [isEntering, setIsEntering] = useState(true);
     const canReorder = canEdit && Boolean(onMoveBy);
 
     // AnimatePresence hands a ref down to measure a block on its way out; the
@@ -371,21 +380,26 @@ export function BlockItem({
             as="article"
             value={block.id}
             ref={setArticle}
-            className={`block ${canReorder ? 'has-handle' : ''} ${isDragging ? 'is-dragging' : ''}`}
+            className={`block ${isEntering ? 'is-entering' : ''} ${canReorder ? 'has-handle' : ''} ${isLifted ? 'is-dragging' : ''}`}
             style={{'--i': index}}
+            onAnimationEnd={(e) => {
+                if (e.target === e.currentTarget) setIsEntering(false);
+            }}
             layout="position"
+            transition={SLIDE}
+            // No scale while carried: a block dropped lower down kept it,
+            // stuck a percent too wide. The shadow does the lifting.
             dragListener={false}
             dragControls={dragControls}
-            whileDrag={{scale: 1.01}}
-            exit={{opacity: 0, scale: 0.98, transition: {duration: 0.18}}}
+            dragMomentum={false}
+            dragTransition={SETTLE}
+            exit={{opacity: 0, scale: 0.98, transition: {duration: 0.15}}}
             onDragStart={() => {
-                setIsDragging(true);
+                setIsLifted(true);
                 onDragStart?.(block.id);
             }}
-            onDragEnd={() => {
-                setIsDragging(false);
-                onDragEnd?.(block.id);
-            }}
+            onDragEnd={() => onDragEnd?.(block.id)}
+            onDragTransitionEnd={() => setIsLifted(false)}
         >
             <header className="block-head">
                 <span className="block-title" title={title}>{title}</span>
@@ -581,7 +595,7 @@ export function BlockItem({
             {canReorder && (
                 // The whole right edge is the grip, so it is easy to find with
                 // a thumb; touch-action stops it from scrolling the page.
-                <AnimateIcon asChild animate={isDragging} animateOnHover={CAN_HOVER}>
+                <AnimateIcon asChild animate={isLifted} animateOnHover={CAN_HOVER}>
                     <button
                         ref={handleRef}
                         type="button"

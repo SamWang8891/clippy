@@ -12,6 +12,10 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     transition: border-color 120ms var(--ease);
+}
+
+/* Present only until the entrance ends; see isEntering in BlockItem. */
+.block.is-entering {
     animation: rise-in 260ms var(--ease) backwards;
     animation-delay: min(calc(var(--i, 0) * 35ms), 245ms);
 }
@@ -20,8 +24,12 @@
     border-color: var(--border-strong);
 }
 
-/* Lifted while it is carried; Motion adds the scale. */
+/* Lifted while it is carried and until it has settled. !important because
+   Motion writes z-index inline, and drops it to unset whenever the block's
+   offset passes zero — mid-drag after a swap, and through the final snap —
+   which let the neighbours paint over the block in hand. */
 .block.is-dragging {
+    z-index: 2 !important;
     border-color: var(--border-strong);
     box-shadow: var(--shadow-lift);
 }
