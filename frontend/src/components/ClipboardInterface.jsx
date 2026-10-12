@@ -579,6 +579,9 @@ export function ClipboardInterface() {
                                     role="tab"
                                     aria-selected={newBlockType === t.id}
                                     className={`compose-tab ${newBlockType === t.id ? 'is-active' : ''}`}
+                                    // A mouse press leaves focus in the editor, so typing
+                                    // straight after switching modes is not lost.
+                                    onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => setNewBlockType(t.id)}
                                     type="button"
                                 >
@@ -695,6 +698,13 @@ function NameEditor({name, onRename}) {
 function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLanguage = 'auto'}) {
     const [content, setContent] = useState(initialContent);
     const [language, setLanguage] = useState(initialLanguage);
+    const inputRef = useRef(null);
+
+    // Switching Text/Code or picking a language is a click on a button, which
+    // takes focus with it — and the next keystrokes landed on that button.
+    useEffect(() => {
+        inputRef.current?.focus();
+    }, [mode]);
 
     const isCode = mode === 'code';
 
@@ -722,6 +732,7 @@ function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLan
     return (
         <form onSubmit={handleSubmit} className={`compose-text ${isCode ? 'is-code' : ''}`}>
             <LinedTextarea
+                inputRef={inputRef}
                 value={content}
                 onChange={setContent}
                 code={isCode}
@@ -741,7 +752,10 @@ function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLan
                             <Select
                                 value={language}
                                 options={SUPPORTED_LANGUAGES}
-                                onChange={setLanguage}
+                                onChange={(next) => {
+                                    setLanguage(next);
+                                    inputRef.current?.focus();
+                                }}
                                 label="Language"
                             />
                         </>

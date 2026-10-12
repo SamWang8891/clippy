@@ -135,6 +135,7 @@ export function BlockItem({
     const articleRef = useRef(null);
     const fileInputRef = useRef(null);
     const handleRef = useRef(null);
+    const editInputRef = useRef(null);
     const dragControls = useDragControls();
     const [isDragging, setIsDragging] = useState(false);
     const canReorder = canEdit && Boolean(onMoveBy);
@@ -265,6 +266,12 @@ export function BlockItem({
         setEditLanguage(parsed.language || 'auto');
         setIsEditing(true);
     };
+
+    // Text/Code and the language picker are buttons; give the keyboard back
+    // to the editor after either, or the next keystrokes land on the button.
+    useEffect(() => {
+        if (isEditing) editInputRef.current?.focus();
+    }, [isEditing, editMode]);
 
     const handleCancelEdit = () => {
         setIsEditing(false);
@@ -411,6 +418,8 @@ export function BlockItem({
                                     key={opt.id}
                                     type="button"
                                     className={`block-edit-tab ${editMode === opt.id ? 'is-active' : ''}`}
+                                    // Keeps focus in the editor; see the effect above.
+                                    onMouseDown={(e) => e.preventDefault()}
                                     onClick={() => setEditMode(opt.id)}
                                 >
                                     {opt.label}
@@ -421,12 +430,16 @@ export function BlockItem({
                                     className="block-edit-lang"
                                     value={editLanguage}
                                     options={SUPPORTED_LANGUAGES}
-                                    onChange={setEditLanguage}
+                                    onChange={(next) => {
+                                        setEditLanguage(next);
+                                        editInputRef.current?.focus();
+                                    }}
                                     label="Language"
                                 />
                             )}
                         </div>
                         <LinedTextarea
+                            inputRef={editInputRef}
                             value={editValue}
                             onChange={setEditValue}
                             code={editMode === 'code'}
