@@ -272,69 +272,6 @@
     gap: 10px;
 }
 
-.compose-text-frame {
-    display: flex;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    transition: border-color 120ms var(--ease);
-    overflow: hidden;
-}
-
-.compose-text-frame:focus-within {
-    border-color: var(--fg);
-}
-
-.compose-gutter {
-    display: flex;
-    flex-direction: column;
-    padding: 16px 16px 16px 18px;
-    font-family: var(--font-mono);
-    font-size: 16px;
-    line-height: 1.6;
-    color: var(--fg-subtle);
-    background: transparent;
-    border-right: 1px solid var(--border);
-    user-select: none;
-    min-width: 56px;
-    text-align: right;
-}
-
-.compose-gutter span {
-    display: block;
-}
-
-.compose-text textarea {
-    flex: 1;
-    padding: 16px 20px;
-    font-family: var(--font-sans);
-    font-size: 20px;
-    line-height: 1.6;
-    color: var(--fg);
-    background: transparent;
-    border: 0;
-    resize: vertical;
-    min-height: 180px;
-}
-
-.compose-text.is-code textarea {
-    font-family: var(--font-mono);
-}
-
-.compose-text textarea::placeholder {
-    color: var(--fg-subtle);
-}
-
-.compose-text textarea:focus {
-    outline: none;
-}
-
-@media (max-width: 639px) {
-    .compose-text textarea {
-        font-size: 16px;
-    }
-}
-
 .compose-foot {
     display: flex;
     align-items: center;

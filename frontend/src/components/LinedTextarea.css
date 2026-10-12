@@ -1,0 +1,88 @@
+/* The frame scrolls, not the textarea: gutter, mirror and textarea move as one
+   block, so nothing can drift apart however long the text gets. */
+.lined {
+    max-height: 70vh;
+    overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition: border-color 120ms var(--ease);
+}
+
+.lined:focus-within {
+    border-color: var(--fg);
+}
+
+/* line-height is an em length on purpose: it resolves here, against the text
+   size, and the smaller gutter digits inherit that same line box. */
+.lined-grid {
+    position: relative;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-content: start;
+    min-height: 180px;
+    padding: 16px 0;
+    font-family: var(--font-sans);
+    font-size: 20px;
+    line-height: 1.6em;
+}
+
+.lined.is-code .lined-grid {
+    font-family: var(--font-mono);
+}
+
+.lined-num {
+    min-width: 56px;
+    padding: 0 16px 0 18px;
+    font-family: var(--font-mono);
+    font-size: 16px;
+    text-align: right;
+    color: var(--fg-subtle);
+    user-select: none;
+}
+
+/* Must lay text out exactly as the textarea does: same width, same padding
+   (its left border included), same wrapping rules. */
+.lined-ghost {
+    padding: 0 20px 0 21px;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    visibility: hidden;
+}
+
+/* Placed in the text column and stretched over the grid's whole padding box,
+   so it is always exactly as tall as the mirrored lines, or the min-height. */
+.lined-input {
+    position: absolute;
+    grid-column: 2;
+    inset: 0;
+    width: auto;
+    height: auto;
+    padding: 16px 20px;
+    font: inherit;
+    line-height: inherit;
+    color: var(--fg);
+    background: transparent;
+    border: 0;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    overflow: hidden;
+    resize: none;
+}
+
+.lined-input:focus,
+.lined-input:focus-visible {
+    outline: none;
+}
+
+.lined-input::placeholder {
+    color: var(--fg-subtle);
+}
+
+@media (max-width: 639px) {
+    .lined-grid {
+        font-size: 16px;
+    }
+}

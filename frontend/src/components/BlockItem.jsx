@@ -6,6 +6,7 @@ import {useToast} from '../context/ToastContext';
 import {decrypt, decryptToBytes} from '../utils/encryption';
 import {fetchBlockCiphertext, createRawTextLink, createRawFileLink, getRawLinkUrl} from '../utils/api';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock, parseBlockContent} from '../utils/codeBlock';
+import {LinedTextarea} from './LinedTextarea';
 import './BlockItem.css';
 
 const CODE_SIGNATURE = /[{};=]|=>|->|^\s*(import|from|const|let|var|def|func|class|function|return|if|for|while|public|private|export)\b|\n\s{2,}\S/m;
@@ -329,15 +330,6 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
     };
 
     const handleEditKeyDown = (e) => {
-        if (editMode === 'code' && e.key === 'Tab') {
-            e.preventDefault();
-            const {selectionStart, selectionEnd, value} = e.target;
-            const next = value.substring(0, selectionStart) + '  ' + value.substring(selectionEnd);
-            setEditValue(next);
-            requestAnimationFrame(() => {
-                e.target.selectionStart = e.target.selectionEnd = selectionStart + 2;
-            });
-        }
         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault();
             handleSaveEdit();
@@ -348,7 +340,6 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
         }
     };
 
-    const editLineCount = Math.max(1, editValue.split('\n').length);
     const timestamp = formatTime(block.created_at);
 
     const title = block.type === 'file'
@@ -412,22 +403,14 @@ export function BlockItem({block, index, sessionId, userId, onDelete, onUpdateTe
                                 </select>
                             )}
                         </div>
-                        <div className="block-edit-frame">
-                            <div className="block-edit-gutter" aria-hidden="true">
-                                {Array.from({length: Math.max(6, editLineCount)}, (_, i) => (
-                                    <span key={i}>{String(i + 1).padStart(2, '0')}</span>
-                                ))}
-                            </div>
-                            <textarea
-                                className={`block-edit-input ${editMode === 'code' ? 'is-code' : ''}`}
-                                value={editValue}
-                                onChange={(e) => setEditValue(e.target.value)}
-                                onKeyDown={handleEditKeyDown}
-                                autoFocus
-                                spellCheck="false"
-                                rows={Math.min(20, Math.max(4, editLineCount))}
-                            />
-                        </div>
+                        <LinedTextarea
+                            value={editValue}
+                            onChange={setEditValue}
+                            code={editMode === 'code'}
+                            onKeyDown={handleEditKeyDown}
+                            aria-label={editMode === 'code' ? 'Code' : 'Text'}
+                            autoFocus
+                        />
                         <div className="block-edit-foot">
                             <span className="block-edit-hint">⌘/Ctrl + ↵ save · Esc cancel</span>
                             <div className="block-edit-buttons">

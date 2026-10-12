@@ -17,6 +17,7 @@ import {clearSessionKey, setSessionKeyFromConnectionId} from '../utils/encryptio
 import {viewTransition} from '../utils/motion';
 import {SUPPORTED_LANGUAGES, encodeCodeBlock} from '../utils/codeBlock';
 import {BlockItem} from './BlockItem';
+import {LinedTextarea} from './LinedTextarea';
 import {Id} from './Id';
 import {Menu} from './Menu';
 import {Notification} from './Notification';
@@ -602,15 +603,6 @@ function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLan
     };
 
     const handleKeyDown = (e) => {
-        if (isCode && e.key === 'Tab') {
-            e.preventDefault();
-            const {selectionStart, selectionEnd, value} = e.target;
-            const next = value.substring(0, selectionStart) + '  ' + value.substring(selectionEnd);
-            setContent(next);
-            requestAnimationFrame(() => {
-                e.target.selectionStart = e.target.selectionEnd = selectionStart + 2;
-            });
-        }
         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
             e.preventDefault();
             if (content.trim()) onSubmit(content, language);
@@ -626,22 +618,15 @@ function TextBlockForm({mode = 'text', onSubmit, initialContent = '', initialLan
 
     return (
         <form onSubmit={handleSubmit} className={`compose-text ${isCode ? 'is-code' : ''}`}>
-            <div className="compose-text-frame">
-                <div className="compose-gutter" aria-hidden="true">
-                    {Array.from({length: Math.max(10, lineCount)}, (_, i) => (
-                        <span key={i}>{String(i + 1).padStart(2, '0')}</span>
-                    ))}
-                </div>
-                <textarea
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder={placeholder}
-                    rows={10}
-                    autoFocus
-                    spellCheck="false"
-                />
-            </div>
+            <LinedTextarea
+                value={content}
+                onChange={setContent}
+                code={isCode}
+                onKeyDown={handleKeyDown}
+                placeholder={placeholder}
+                aria-label={isCode ? 'Code' : 'Text'}
+                autoFocus
+            />
             <div className="compose-foot">
                 <div className="compose-stats">
                     <span>{lineCount} line{lineCount === 1 ? '' : 's'}</span>
