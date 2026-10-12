@@ -178,7 +178,9 @@
     display: flex;
 }
 
+/* Relative so AnimatePresence can pop a closing composer out of the flow. */
 .desk-body {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -254,7 +256,6 @@
     background: var(--bg-elev);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    animation: rise-in 220ms var(--ease) backwards;
 }
 
 .compose-tabs {

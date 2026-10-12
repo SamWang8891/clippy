@@ -673,13 +673,22 @@ export function ClipboardInterface() {
                     </AnimatePresence>
                 </Reorder.Group>
 
+                {/* The composer and New item hand over to each other: whichever
+                    way it closes — Cancel, Esc, a press outside, Save — the card
+                    sinks away as the button fades back in, and opening is the
+                    same move in reverse. popLayout lets the two overlap. */}
+                <AnimatePresence mode="popLayout" initial={false}>
                 {!canEdit ? null : isCreating ? (
                     // layout animates the card's height between forms; the
                     // children ride along by position, so text never squashes.
                     <motion.div
+                        key="compose"
                         className="compose"
                         ref={composeRef}
                         layout
+                        initial={{opacity: 0, y: 8, scale: 0.985}}
+                        animate={{opacity: 1, y: 0, scale: 1}}
+                        exit={{opacity: 0, y: 8, scale: 0.985, transition: {duration: 0.15, ease: [0.4, 0, 1, 1]}}}
                         transition={QUICK}
                         style={{borderRadius: 8}}
                         onKeyDown={handleComposeKeyDown}
@@ -737,18 +746,27 @@ export function ClipboardInterface() {
                         </AnimatePresence>
                     </motion.div>
                 ) : (
-                    <IconButton
-                        icon={Plus}
-                        size={20}
-                        className="compose-open"
-                        onClick={() => setIsCreating(true)}
-                        aria-keyshortcuts="N"
+                    <motion.div
+                        key="open"
+                        initial={{opacity: 0}}
+                        animate={{opacity: 1}}
+                        exit={{opacity: 0, transition: {duration: 0.1}}}
+                        transition={QUICK}
                     >
-                        New item
-                        {/* aria-hidden: aria-keyshortcuts already says it. */}
-                        <kbd className="compose-open-key" aria-hidden="true">N</kbd>
-                    </IconButton>
+                        <IconButton
+                            icon={Plus}
+                            size={20}
+                            className="compose-open"
+                            onClick={() => setIsCreating(true)}
+                            aria-keyshortcuts="N"
+                        >
+                            New item
+                            {/* aria-hidden: aria-keyshortcuts already says it. */}
+                            <kbd className="compose-open-key" aria-hidden="true">N</kbd>
+                        </IconButton>
+                    </motion.div>
                 )}
+                </AnimatePresence>
             </div>
 
             {(isDraggingFiles || pendingUploads > 0) && (
